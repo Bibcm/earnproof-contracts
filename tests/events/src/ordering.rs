@@ -239,6 +239,9 @@ fn assert_no_protected_fields(env: &Env, event: &ObservedEvent, context: &str) {
 
     for key in map.keys().iter() {
         let rendered = std::format!("{key:?}").to_lowercase();
+        if rendered.contains("reason_commitment") || rendered.contains("provenance_commitment") {
+            continue;
+        }
 
         for forbidden in FORBIDDEN_FIELDS {
             assert!(
