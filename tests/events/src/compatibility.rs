@@ -21,7 +21,15 @@ use soroban_sdk::{Address, Env, Symbol, TryFromVal, Val};
 const DECLARED_EVENTS: &[(&str, &[&str])] = &[
     // protocol-config
     ("initialized", &["admin"]),
-    ("admin_changed", &["new_admin"]),
+    (
+        "admin_transfer_nominated",
+        &["pending_admin", "nominated_by"],
+    ),
+    ("admin_transfer_accepted", &["new_admin"]),
+    (
+        "admin_transfer_cancelled",
+        &["pending_admin", "cancelled_by"],
+    ),
     ("paused", &["paused"]),
     ("unpaused", &["paused"]),
     ("schema_approved", &["version"]),
@@ -41,9 +49,18 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
         "issuer_metadata_updated",
         &["issuer_id_hash", "metadata_hash", "updated_at"],
     ),
-    ("issuer_suspended", &["issuer_id_hash", "updated_at"]),
-    ("issuer_reactivated", &["issuer_id_hash", "updated_at"]),
-    ("issuer_revoked", &["issuer_id_hash", "updated_at"]),
+    (
+        "issuer_suspended",
+        &["issuer_id_hash", "reason_commitment", "updated_at"],
+    ),
+    (
+        "issuer_reactivated",
+        &["issuer_id_hash", "reason_commitment", "updated_at"],
+    ),
+    (
+        "issuer_revoked",
+        &["issuer_id_hash", "reason_commitment", "updated_at"],
+    ),
     (
         "issuer_address_rotated",
         &["issuer_id_hash", "old_address", "new_address", "updated_at"],
@@ -120,7 +137,10 @@ fn protocol_config_events_match_their_fixtures() {
     for event in deployment.capture(|| deployment.config.deprecate_schema_version(&4)) {
         assert_matches_fixture(&deployment.env, &event);
     }
-    for event in deployment.capture(|| deployment.config.set_admin(&successor)) {
+    for event in deployment.capture(|| {
+        deployment.config.nominate_admin(&successor);
+        deployment.config.accept_admin()
+    }) {
         assert_matches_fixture(&deployment.env, &event);
     }
 }
@@ -166,12 +186,21 @@ fn issuer_registry_events_match_their_fixtures() {
         assert_matches_fixture(&deployment.env, &event);
     }
 
-    for event in deployment.capture(|| deployment.issuers.suspend_issuer(&deployment.issuer_id)) {
+    for event in deployment.capture(|| {
+        deployment.issuers.suspend_issuer(
+            &deployment.issuer_id,
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+        )
+    }) {
         assert_matches_fixture(&deployment.env, &event);
     }
 
-    for event in deployment.capture(|| deployment.issuers.reactivate_issuer(&deployment.issuer_id))
-    {
+    for event in deployment.capture(|| {
+        deployment.issuers.reactivate_issuer(
+            &deployment.issuer_id,
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+        )
+    }) {
         assert_matches_fixture(&deployment.env, &event);
     }
 
@@ -183,7 +212,12 @@ fn issuer_registry_events_match_their_fixtures() {
         assert_matches_fixture(&deployment.env, &event);
     }
 
-    for event in deployment.capture(|| deployment.issuers.revoke_issuer(&deployment.issuer_id)) {
+    for event in deployment.capture(|| {
+        deployment.issuers.revoke_issuer(
+            &deployment.issuer_id,
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+        )
+    }) {
         assert_matches_fixture(&deployment.env, &event);
     }
 }

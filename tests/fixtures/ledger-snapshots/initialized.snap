@@ -1,6 +1,6 @@
 # scenario: initialized
-# revision: 8
-# reason: merge upstream develop
+# revision: 9
+# reason: upstream reason_commitment integration
 # body-digest: da50e9087cbd6aea4f15454753026acad252096836858568bbf3d8eb9a8f4ebb
 
 [ledger]

@@ -44,6 +44,7 @@ enum DataKey {
     AllowedWasm(BytesN<32>),
     ContractVersion,
     CurrentWasmHash,
+    PendingAdmin,
     ScopedPause(PauseScope),
     UpgradeHistory(u32),
     UpgradeHistoryCount,
@@ -64,6 +65,23 @@ pub struct ScopedPauseChanged {
 pub struct ProofArchived {
     pub proof_id_hash: BytesN<32>,
     pub archived_at: u64,
+}
+
+#[contractevent]
+pub struct AdminTransferNominated {
+    pub pending_admin: Address,
+    pub nominated_by: Address,
+}
+
+#[contractevent]
+pub struct AdminTransferAccepted {
+    pub new_admin: Address,
+}
+
+#[contractevent]
+pub struct AdminTransferCancelled {
+    pub pending_admin: Address,
+    pub cancelled_by: Address,
 }
 
 // ── upgrade events ────────────────────────────────────────────────────────────
@@ -392,6 +410,64 @@ impl ProofRegistryContract {
             Ok(record) => record.status == ProofStatus::Revoked,
             Err(_) => false,
         }
+    }
+
+    pub fn nominate_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
+        Self::assert_operational(&env);
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_valid_principal(&new_admin)?;
+        Self::require_auth(&admin);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        AdminTransferNominated {
+            pending_admin: new_admin.clone(),
+            nominated_by: admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn accept_admin(env: Env) -> Result<(), ContractError> {
+        Self::assert_operational(&env);
+        let pending_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(ContractError::NotFound)?;
+        Self::require_auth(&pending_admin);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Admin, &pending_admin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+
+        AdminTransferAccepted {
+            new_admin: pending_admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn cancel_admin_transfer(env: Env) -> Result<(), ContractError> {
+        Self::assert_operational(&env);
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+
+        let pending_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(ContractError::NotFound)?;
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+
+        AdminTransferCancelled {
+            pending_admin,
+            cancelled_by: admin,
+        }
+        .publish(&env);
+        Ok(())
     }
 
     pub fn get_admin(env: Env) -> Result<Address, ContractError> {
@@ -1241,7 +1317,10 @@ mod test {
             &bytes(&env, 11),
             &bytes(&env, 99),
         );
-        issuer_registry.suspend_issuer(&bytes(&env, 10));
+        issuer_registry.suspend_issuer(
+            &bytes(&env, 10),
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
 
         let result = client.try_register_proof(
             &bytes(&env, 1),
@@ -2310,7 +2389,10 @@ mod test {
             &bytes(&env, 16),
             &bytes(&env, 99),
         );
-        issuer_registry.suspend_issuer(&bytes(&env, 15));
+        issuer_registry.suspend_issuer(
+            &bytes(&env, 15),
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
 
         let result = client.try_register_proof(
             &bytes(&env, 220),
@@ -2458,7 +2540,10 @@ mod test {
             &bytes(&env, 18),
             &bytes(&env, 99),
         );
-        issuer_registry.suspend_issuer(&bytes(&env, 17));
+        issuer_registry.suspend_issuer(
+            &bytes(&env, 17),
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
 
         let result = client.try_register_proof(
             &bytes(&env, 160),
@@ -2489,7 +2574,10 @@ mod test {
             &bytes(&env, 20),
             &bytes(&env, 99),
         );
-        issuer_registry.suspend_issuer(&bytes(&env, 19));
+        issuer_registry.suspend_issuer(
+            &bytes(&env, 19),
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
 
         let result = client.try_register_proof(
             &bytes(&env, 170),

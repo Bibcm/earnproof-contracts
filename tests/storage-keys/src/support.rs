@@ -247,7 +247,8 @@ pub fn exercised_deployment() -> Deployment {
         .set_sequence_number(env.ledger().sequence() + earnproof_shared::UPGRADE_TIMELOCK_LEDGERS);
     config.upgrade_contract(&wasm_hash_config);
     config.approve_upgrade(&pending_config, &3);
-    config.set_admin(&rotated_admin);
+    config.nominate_admin(&rotated_admin);
+    config.accept_admin();
 
     let issuers_id = env.register(IssuerRegistryContract, ());
     let issuers = IssuerRegistryContractClient::new(&env, &issuers_id);
@@ -261,15 +262,24 @@ pub fn exercised_deployment() -> Deployment {
         &bytes32(&env, 11),
         &bytes32(&env, 99),
     );
-    issuers.suspend_issuer(&bytes32(&env, 10));
-    issuers.reactivate_issuer(&bytes32(&env, 10));
+    issuers.suspend_issuer(
+        &bytes32(&env, 10),
+        &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+    );
+    issuers.reactivate_issuer(
+        &bytes32(&env, 10),
+        &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+    );
     issuers.register_issuer(
         &bytes32(&env, 20),
         &revoked_issuer,
         &bytes32(&env, 21),
         &bytes32(&env, 99),
     );
-    issuers.revoke_issuer(&bytes32(&env, 20));
+    issuers.revoke_issuer(
+        &bytes32(&env, 20),
+        &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+    );
     issuers.pause_scope(&earnproof_shared::PauseScope::Update);
     issuers.unpause_scope(&earnproof_shared::PauseScope::Update);
     let wasm_hash_issuers = bytes32(&env, 0x92);
