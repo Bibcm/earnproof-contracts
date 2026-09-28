@@ -155,7 +155,7 @@ pub struct ErrorSpec {
 }
 
 /// Every published error, ordered by code.
-pub const ERROR_CATALOG: [ErrorSpec; 26] = [
+pub const ERROR_CATALOG: [ErrorSpec; 27] = [
     ErrorSpec {
         code: 1,
         name: "AlreadyInitialized",
@@ -467,6 +467,18 @@ pub const ERROR_CATALOG: [ErrorSpec; 26] = [
         remediation: "Split the request into batches of between one and MAX_PROOF_BATCH_SIZE entries.",
         http_status: 400,
         client_message: "Invalid batch size",
+    },
+    ErrorSpec {
+        code: 312,
+        name: "InvalidActivationTime",
+        enum_name: "ProofError",
+        domain: Domain::ProofRegistry,
+        status: Status::Returned,
+        cause: "register_proof_with_activation was given an activates_at at or after expires_at, so the proof could never be valid.",
+        retry: Retry::AfterCallerChange,
+        remediation: "Choose an activation time strictly before the expiration.",
+        http_status: 400,
+        client_message: "Invalid activation time",
     },
 ];
 

@@ -105,6 +105,7 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 | 309 | `UnsupportedSchema` | `ProofError` | proof-registry | returned | after-operator-action | 400 |
 | 310 | `MalformedInput` | `ProofError` | proof-registry | reserved | after-caller-change | 400 |
 | 311 | `InvalidBatchSize` | `ProofError` | proof-registry | returned | after-caller-change | 400 |
+| 312 | `InvalidActivationTime` | `ProofError` | proof-registry | returned | after-caller-change | 400 |
 
 ## Details
 
@@ -393,5 +394,16 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 - Remediation: Split the request into batches of between one and MAX_PROOF_BATCH_SIZE entries.
 - Suggested HTTP status: 400
 - Client message: "Invalid batch size"
+
+### 312 - `InvalidActivationTime`
+
+- Enum: `ProofError`
+- Domain: proof-registry
+- Status: returned
+- Retry: after-caller-change
+- Cause: register_proof_with_activation was given an activates_at at or after expires_at, so the proof could never be valid.
+- Remediation: Choose an activation time strictly before the expiration.
+- Suggested HTTP status: 400
+- Client message: "Invalid activation time"
 
 <!-- END GENERATED -->
