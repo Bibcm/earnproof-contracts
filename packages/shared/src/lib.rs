@@ -32,6 +32,15 @@ pub const MIGRATION_STATUS_VERSION: u32 = 1;
 /// Maximum number of records a single migration invocation may commit.
 pub const MAX_MIGRATION_BATCH: u32 = 100;
 
+/// Maximum number of proofs a single batch registration or batch revocation
+/// call may contain. Bounded not just by CPU/memory but by Soroban's
+/// per-invocation ledger footprint limit (100 entries in this environment):
+/// each proof touches a persistent data entry and its TTL entry, and a
+/// batch revocation touching state written by prior calls was measured to
+/// exceed that footprint limit at 25. 20 leaves comfortable headroom on
+/// both the registration and revocation paths.
+pub const MAX_PROOF_BATCH_SIZE: u32 = 20;
+
 /// Resumable progress marker shared by every contract upgrade path.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -268,6 +277,10 @@ pub enum ProofError {
     /// Distinct from unsupported schema — the input itself is invalid.
     /// Recovery: validate input against the schema before resubmitting.
     MalformedInput = 310,
+    /// A batch operation was given zero entries or more than
+    /// `MAX_PROOF_BATCH_SIZE` entries.
+    /// Recovery: split the batch into chunks of at most `MAX_PROOF_BATCH_SIZE`.
+    InvalidBatchSize = 311,
 }
 
 #[contracttype]
@@ -343,6 +356,19 @@ pub struct ProofRecord {
     pub expires_at: u64,
     pub created_at: u64,
     pub revoked_at: u64,
+}
+
+/// One entry of a bounded batch registration request.
+///
+/// Mirrors the per-proof arguments of `register_proof` minus `issuer_address`,
+/// since a batch registers proofs for a single authorized issuer.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProofRegistrationInput {
+    pub proof_id_hash: BytesN<32>,
+    pub commitment_hash: BytesN<32>,
+    pub schema_version: u32,
+    pub expires_at: u64,
 }
 
 #[contracttype]

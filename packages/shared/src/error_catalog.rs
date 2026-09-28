@@ -155,7 +155,7 @@ pub struct ErrorSpec {
 }
 
 /// Every published error, ordered by code.
-pub const ERROR_CATALOG: [ErrorSpec; 25] = [
+pub const ERROR_CATALOG: [ErrorSpec; 26] = [
     ErrorSpec {
         code: 1,
         name: "AlreadyInitialized",
@@ -455,6 +455,18 @@ pub const ERROR_CATALOG: [ErrorSpec; 25] = [
         remediation: "Validate the proof input data against the schema before resubmitting. Ensure all required fields are present and data sizes conform to the schema limits.",
         http_status: 400,
         client_message: "Malformed proof input",
+    },
+    ErrorSpec {
+        code: 311,
+        name: "InvalidBatchSize",
+        enum_name: "ProofError",
+        domain: Domain::ProofRegistry,
+        status: Status::Returned,
+        cause: "A batch registration or batch revocation call was given zero entries, or more entries than MAX_PROOF_BATCH_SIZE.",
+        retry: Retry::AfterCallerChange,
+        remediation: "Split the request into batches of between one and MAX_PROOF_BATCH_SIZE entries.",
+        http_status: 400,
+        client_message: "Invalid batch size",
     },
 ];
 

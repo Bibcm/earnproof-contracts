@@ -322,6 +322,19 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
         )),
     );
 
+    // 311: InvalidBatchSize — an empty batch is rejected before any
+    // cross-contract call is made.
+    let empty_batch: soroban_sdk::Vec<earnproof_shared::ProofRegistrationInput> =
+        soroban_sdk::Vec::new(env);
+    observed.record(
+        "proof-registry batch with zero entries",
+        code(
+            initial_dep
+                .proofs
+                .try_register_proofs_batch(&empty_batch, &initial_dep.issuer),
+        ),
+    );
+
     // Every catalogued `Returned` code must appear at least once above.
     for entry in ERROR_CATALOG {
         if entry.status == Status::Returned {
