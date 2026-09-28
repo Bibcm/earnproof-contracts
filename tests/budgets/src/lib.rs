@@ -78,6 +78,8 @@ mod tests {
     const PROOF_REGISTER_BATCH_MAX_MEM_MAX: u64 = 1_750_000;
     const PROOF_REGISTER_WITH_ACTIVATION_CPU_MAX: u64 = 800_000;
     const PROOF_REGISTER_WITH_ACTIVATION_MEM_MAX: u64 = 250_000;
+    const PROOF_REVOKE_BATCH_MAX_CPU_MAX: u64 = 6_800_000;
+    const PROOF_REVOKE_BATCH_MAX_MEM_MAX: u64 = 2_000_000;
 
     // -----------------------------------------------------------------------
     // Test Utilities
@@ -583,6 +585,36 @@ mod tests {
             "proof_registry.register_proof_with_activation",
             PROOF_REGISTER_WITH_ACTIVATION_CPU_MAX,
             PROOF_REGISTER_WITH_ACTIVATION_MEM_MAX,
+        );
+    }
+
+    #[test]
+    fn proof_registry_revoke_proofs_batch_max_size_budget() {
+        let env = Env::default();
+        let (proof_client, _protocol, _issuer_registry, issuer) = setup_proof_registry(&env);
+
+        let mut batch = soroban_sdk::Vec::new(&env);
+        for seed in 0..earnproof_shared::MAX_PROOF_BATCH_SIZE as u8 {
+            let proof_id = bytes(&env, seed);
+            proof_client.register_proof(
+                &proof_id,
+                &bytes(&env, seed.wrapping_add(100)),
+                &issuer,
+                &1,
+                &2_000,
+            );
+            batch.push_back(proof_id);
+        }
+
+        env.cost_estimate().budget().reset_unlimited();
+
+        proof_client.revoke_proofs_batch(&batch);
+
+        assert_budget(
+            &env,
+            "proof_registry.revoke_proofs_batch(max_size)",
+            PROOF_REVOKE_BATCH_MAX_CPU_MAX,
+            PROOF_REVOKE_BATCH_MAX_MEM_MAX,
         );
     }
 
