@@ -101,6 +101,7 @@ fuzz_target!(|data: &[u8]| {
         updated_at,
         status_effective_ledger: updated_at as u32,
         status_effective_timestamp: updated_at,
+        reason_commitment: None,
     };
 
     // Verify invariants

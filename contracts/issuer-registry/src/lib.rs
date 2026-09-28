@@ -26,9 +26,27 @@ enum DataKey {
     ContractVersion,
     Successor,
     Decommissioned,
+    PendingAdmin,
     LatestUpgradeReceipt,
     /// Upgrade approval with temporal metadata (timelock and expiry).
     UpgradeApproval,
+}
+
+#[contractevent]
+pub struct AdminTransferNominated {
+    pub pending_admin: Address,
+    pub nominated_by: Address,
+}
+
+#[contractevent]
+pub struct AdminTransferAccepted {
+    pub new_admin: Address,
+}
+
+#[contractevent]
+pub struct AdminTransferCancelled {
+    pub pending_admin: Address,
+    pub cancelled_by: Address,
 }
 
 // ── upgrade events ────────────────────────────────────────────────────────────
@@ -70,6 +88,8 @@ pub struct ContractUpgraded {
 /// sentinel; a real URI commitment is set later via
 /// `set_issuer_metadata_commitment`. `metadata_revision` starts at
 /// [`METADATA_REVISION_INITIAL`].
+/// `epoch` is the registry epoch after this mutation, so an indexer can order
+/// lifecycle events and detect gaps without a separate read.
 #[contractevent]
 pub struct IssuerRegistered {
     pub issuer_id_hash: BytesN<32>,
@@ -79,6 +99,7 @@ pub struct IssuerRegistered {
     pub metadata_revision: u32,
     pub provenance_commitment: BytesN<32>,
     pub created_at: u64,
+    pub epoch: u64,
 }
 
 /// Emitted when an issuer's metadata commitments are updated.
@@ -93,6 +114,7 @@ pub struct IssuerMetadataUpdated {
     pub metadata_uri_hash: BytesN<32>,
     pub metadata_revision: u32,
     pub updated_at: u64,
+    pub epoch: u64,
 }
 
 /// Emitted when an issuer is suspended.
@@ -104,7 +126,9 @@ pub struct IssuerSuspended {
     pub issuer_id_hash: BytesN<32>,
     pub effective_ledger: u32,
     pub effective_timestamp: u64,
+    pub reason_commitment: BytesN<32>,
     pub updated_at: u64,
+    pub epoch: u64,
 }
 
 /// Emitted when a suspended issuer is reactivated.
@@ -116,7 +140,9 @@ pub struct IssuerReactivated {
     pub issuer_id_hash: BytesN<32>,
     pub effective_ledger: u32,
     pub effective_timestamp: u64,
+    pub reason_commitment: BytesN<32>,
     pub updated_at: u64,
+    pub epoch: u64,
 }
 
 /// Emitted when an issuer is permanently revoked.
@@ -128,7 +154,9 @@ pub struct IssuerRevoked {
     pub issuer_id_hash: BytesN<32>,
     pub effective_ledger: u32,
     pub effective_timestamp: u64,
+    pub reason_commitment: BytesN<32>,
     pub updated_at: u64,
+    pub epoch: u64,
 }
 
 /// Emitted when an issuer's on-chain wallet address is rotated.
@@ -140,6 +168,24 @@ pub struct IssuerAddressRotated {
     pub old_address: Address,
     pub new_address: Address,
     pub updated_at: u64,
+    pub epoch: u64,
+}
+
+// ── capacity and cooldown governance events ─────────────────────────────────
+
+/// Emitted when the governed maximum active-issuer capacity is changed.
+#[contractevent]
+pub struct MaxActiveIssuersChanged {
+    pub new_max: u32,
+    pub active_count: u32,
+    pub changed_by: Address,
+}
+
+/// Emitted when the governed reactivation cooldown is changed.
+#[contractevent]
+pub struct ReactivationCooldownChanged {
+    pub new_cooldown_seconds: u64,
+    pub changed_by: Address,
 }
 
 #[contractevent]
@@ -187,7 +233,109 @@ impl IssuerRegistryContract {
         env.storage()
             .instance()
             .set(&DataKey::ContractVersion, &1_u32);
+        // Deterministic starting state for the epoch, capacity, and cooldown
+        // features. Capacity defaults to unlimited so pre-existing behaviour is
+        // preserved until an admin sets a real bound.
+        env.storage().instance().set(&DataKey::IssuerEpoch, &0_u64);
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxActiveIssuers, &u32::MAX);
+        env.storage()
+            .instance()
+            .set(&DataKey::ActiveIssuerCount, &0_u32);
+        env.storage()
+            .instance()
+            .set(&DataKey::ReactivationCooldown, &0_u64);
         Self::extend_instance_ttl(env);
+        Ok(())
+    }
+
+    /// Initializes the epoch, capacity, and cooldown state on a contract that
+    /// was deployed before these features existed.
+    ///
+    /// Idempotent for the keys that have a natural default (epoch, capacity
+    /// limit, cooldown): they are only written when absent. The active-issuer
+    /// count cannot be derived on-chain, so the caller supplies the known count
+    /// once; it is written unconditionally. Admin-only.
+    pub fn migrate(env: Env, active_issuer_count: u32) -> Result<(), IssuerError> {
+        let admin = Self::get_admin(env.clone()).map_err(|_| IssuerError::IssuerNotFound)?;
+        Self::require_auth(&admin);
+
+        if !env.storage().instance().has(&DataKey::IssuerEpoch) {
+            env.storage().instance().set(&DataKey::IssuerEpoch, &0_u64);
+        }
+        if !env.storage().instance().has(&DataKey::MaxActiveIssuers) {
+            env.storage()
+                .instance()
+                .set(&DataKey::MaxActiveIssuers, &u32::MAX);
+        }
+        if !env.storage().instance().has(&DataKey::ReactivationCooldown) {
+            env.storage()
+                .instance()
+                .set(&DataKey::ReactivationCooldown, &0_u64);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::ActiveIssuerCount, &active_issuer_count);
+        Self::extend_instance_ttl(env);
+        Ok(())
+    }
+
+    pub fn nominate_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env).map_err(|_| ContractError::InvalidState)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_valid_admin(&new_admin)?;
+        Self::require_auth(&admin);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        AdminTransferNominated {
+            pending_admin: new_admin.clone(),
+            nominated_by: admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn accept_admin(env: Env) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env).map_err(|_| ContractError::InvalidState)?;
+        let pending_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(ContractError::NotFound)?;
+        Self::require_auth(&pending_admin);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Admin, &pending_admin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+
+        AdminTransferAccepted {
+            new_admin: pending_admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn cancel_admin_transfer(env: Env) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env).map_err(|_| ContractError::InvalidState)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+
+        let pending_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(ContractError::NotFound)?;
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+
+        AdminTransferCancelled {
+            pending_admin,
+            cancelled_by: admin,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -302,6 +450,11 @@ impl IssuerRegistryContract {
         // without the ledger/timestamp at which it became effective. Timing is
         // sourced only from the host ledger environment. The URI commitment
         // starts at the all-zero sentinel until an explicit commitment is set.
+        // A new issuer starts Active, so it consumes one capacity slot. This is
+        // checked and reserved before any state is written, so a rejected
+        // registration mutates nothing.
+        Self::reserve_active_capacity(&env)?;
+
         let now = env.ledger().timestamp();
         let effective_ledger = env.ledger().sequence();
         let metadata_uri_hash = Self::zero_hash(&env);
@@ -317,6 +470,7 @@ impl IssuerRegistryContract {
             updated_at: now,
             status_effective_ledger: effective_ledger,
             status_effective_timestamp: now,
+            reason_commitment: None,
         };
 
         env.storage().persistent().set(&key, &record);
@@ -326,6 +480,7 @@ impl IssuerRegistryContract {
         Self::extend_issuer_ttl(env.clone(), issuer_id_hash.clone());
         Self::extend_address_ttl(env.clone(), issuer_address.clone());
 
+        let epoch = Self::bump_epoch(&env);
         IssuerRegistered {
             issuer_id_hash,
             issuer_address,
@@ -334,6 +489,7 @@ impl IssuerRegistryContract {
             metadata_revision: METADATA_REVISION_INITIAL,
             provenance_commitment,
             created_at: now,
+            epoch,
         }
         .publish(&env);
         Ok(())
@@ -376,6 +532,7 @@ impl IssuerRegistryContract {
         env.storage().persistent().set(&key, &record);
         Self::extend_issuer_key_ttl(env.clone(), &key);
 
+        let epoch = Self::bump_epoch(&env);
         IssuerMetadataUpdated {
             issuer_id_hash,
             metadata_hash,
@@ -452,21 +609,44 @@ impl IssuerRegistryContract {
             metadata_uri_hash,
             metadata_revision,
             updated_at: now,
+            epoch,
         }
         .publish(&env);
         Ok(())
     }
 
-    pub fn suspend_issuer(env: Env, issuer_id_hash: BytesN<32>) -> Result<(), IssuerError> {
-        Self::set_status(env, issuer_id_hash, IssuerStatus::Suspended)
+    pub fn suspend_issuer(
+        env: Env,
+        issuer_id_hash: BytesN<32>,
+        reason_commitment: BytesN<32>,
+    ) -> Result<(), IssuerError> {
+        Self::set_status(
+            env,
+            issuer_id_hash,
+            IssuerStatus::Suspended,
+            reason_commitment,
+        )
     }
 
-    pub fn reactivate_issuer(env: Env, issuer_id_hash: BytesN<32>) -> Result<(), IssuerError> {
-        Self::set_status(env, issuer_id_hash, IssuerStatus::Active)
+    pub fn reactivate_issuer(
+        env: Env,
+        issuer_id_hash: BytesN<32>,
+        reason_commitment: BytesN<32>,
+    ) -> Result<(), IssuerError> {
+        Self::set_status(env, issuer_id_hash, IssuerStatus::Active, reason_commitment)
     }
 
-    pub fn revoke_issuer(env: Env, issuer_id_hash: BytesN<32>) -> Result<(), IssuerError> {
-        Self::set_status(env, issuer_id_hash, IssuerStatus::Revoked)
+    pub fn revoke_issuer(
+        env: Env,
+        issuer_id_hash: BytesN<32>,
+        reason_commitment: BytesN<32>,
+    ) -> Result<(), IssuerError> {
+        Self::set_status(
+            env,
+            issuer_id_hash,
+            IssuerStatus::Revoked,
+            reason_commitment,
+        )
     }
 
     pub fn rotate_issuer_address(
@@ -515,11 +695,13 @@ impl IssuerRegistryContract {
         Self::extend_issuer_key_ttl(env.clone(), &key);
         Self::extend_address_ttl(env.clone(), new_address.clone());
 
+        let epoch = Self::bump_epoch(&env);
         IssuerAddressRotated {
             issuer_id_hash,
             old_address,
             new_address,
             updated_at: now,
+            epoch,
         }
         .publish(&env);
         Ok(())
@@ -553,6 +735,112 @@ impl IssuerRegistryContract {
             Some(id) => Self::is_active_issuer(env, id),
             None => false,
         }
+    }
+
+    // ── epoch, capacity, cooldown, interface version ──────────────────────────
+
+    /// Machine-readable interface version this contract exposes to consumers.
+    pub fn interface_version(_env: Env) -> InterfaceVersion {
+        ISSUER_REGISTRY_INTERFACE_VERSION
+    }
+
+    /// Current registry epoch. Advances by one on every externally visible
+    /// issuer mutation. A stable value means nothing has changed; consumers use
+    /// it to skip refreshing cached issuer data. Starts at 0.
+    pub fn get_issuer_epoch(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::IssuerEpoch)
+            .unwrap_or(0)
+    }
+
+    /// Number of issuers currently in `Active` status.
+    pub fn get_active_issuer_count(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::ActiveIssuerCount)
+            .unwrap_or(0)
+    }
+
+    /// Governed maximum number of simultaneously `Active` issuers. Defaults to
+    /// `u32::MAX` (effectively unlimited) until an admin sets a bound.
+    pub fn get_max_active_issuers(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MaxActiveIssuers)
+            .unwrap_or(u32::MAX)
+    }
+
+    /// Governed reactivation cooldown, in seconds. Defaults to 0 (no cooldown).
+    pub fn get_reactivation_cooldown(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::ReactivationCooldown)
+            .unwrap_or(0)
+    }
+
+    /// Earliest ledger time at which a suspended issuer may be reactivated.
+    /// Returns 0 when the issuer has never been suspended or has no cooldown
+    /// pending. Fixed at suspension time, so a later cooldown change does not
+    /// move it.
+    pub fn get_earliest_reactivation(env: Env, issuer_id_hash: BytesN<32>) -> u64 {
+        Self::earliest_reactivation(&env, &issuer_id_hash)
+    }
+
+    /// Admin-only: set the maximum active-issuer capacity.
+    ///
+    /// A new limit below the current active usage is rejected with
+    /// `MaxBelowActiveUsage` unless `allow_below_usage` is true, which lets an
+    /// admin ratchet the ceiling down toward a target without first suspending
+    /// issuers (no existing issuer is affected; only future reactivations and
+    /// registrations see the tighter bound).
+    pub fn set_max_active_issuers(
+        env: Env,
+        new_max: u32,
+        allow_below_usage: bool,
+    ) -> Result<(), IssuerError> {
+        let admin = Self::get_admin(env.clone()).map_err(|_| IssuerError::IssuerNotFound)?;
+        Self::require_auth(&admin);
+
+        let active_count = Self::get_active_issuer_count(env.clone());
+        if new_max < active_count && !allow_below_usage {
+            return Err(IssuerError::MaxBelowActiveUsage);
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxActiveIssuers, &new_max);
+        Self::extend_instance_ttl(env.clone());
+
+        MaxActiveIssuersChanged {
+            new_max,
+            active_count,
+            changed_by: admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Admin-only: set the reactivation cooldown, in seconds.
+    ///
+    /// The new value applies only to suspensions that happen after this call;
+    /// the earliest reactivation time of an already-suspended issuer is fixed
+    /// and is never retroactively shortened or lengthened.
+    pub fn set_reactivation_cooldown(env: Env, cooldown_seconds: u64) -> Result<(), IssuerError> {
+        let admin = Self::get_admin(env.clone()).map_err(|_| IssuerError::IssuerNotFound)?;
+        Self::require_auth(&admin);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::ReactivationCooldown, &cooldown_seconds);
+        Self::extend_instance_ttl(env.clone());
+
+        ReactivationCooldownChanged {
+            new_cooldown_seconds: cooldown_seconds,
+            changed_by: admin,
+        }
+        .publish(&env);
+        Ok(())
     }
 
     // ── upgrade governance ────────────────────────────────────────────────────
@@ -971,8 +1259,12 @@ impl IssuerRegistryContract {
         env: Env,
         issuer_id_hash: BytesN<32>,
         status: IssuerStatus,
+        reason_commitment: BytesN<32>,
     ) -> Result<(), IssuerError> {
         Self::assert_operational(&env);
+        if reason_commitment == BytesN::from_array(&env, &[0u8; 32]) {
+            return Err(IssuerError::InvalidAddress);
+        }
         let admin = Self::get_admin(env.clone()).map_err(|_| IssuerError::IssuerNotFound)?;
         Self::require_auth(&admin);
 
@@ -983,7 +1275,8 @@ impl IssuerRegistryContract {
             .get(&key)
             .ok_or(IssuerError::IssuerNotFound)?;
 
-        if record.status == IssuerStatus::Revoked && status != IssuerStatus::Revoked {
+        let previous = record.status.clone();
+        if previous == IssuerStatus::Revoked && status != IssuerStatus::Revoked {
             return Err(IssuerError::InvalidTransition);
         }
 
@@ -994,36 +1287,143 @@ impl IssuerRegistryContract {
         let now = env.ledger().timestamp();
         let effective_ledger = env.ledger().sequence();
         record.status = status.clone();
+        record.reason_commitment = Some(reason_commitment.clone());
+        let now = env.ledger().timestamp();
+
+        // Enforce cooldown and capacity, and adjust the active-issuer count, per
+        // transition. All checks that can reject the call run before any state
+        // is written, so a rejected transition mutates nothing.
+        match status {
+            IssuerStatus::Active => {
+                if previous == IssuerStatus::Suspended {
+                    let earliest = Self::earliest_reactivation(&env, &issuer_id_hash);
+                    if now < earliest {
+                        return Err(IssuerError::ReactivationCooldownActive);
+                    }
+                    // Reactivation returns the issuer to Active, reclaiming a slot.
+                    Self::reserve_active_capacity(&env)?;
+                    env.storage()
+                        .persistent()
+                        .remove(&DataKey::ReactivatableAt(issuer_id_hash.clone()));
+                }
+            }
+            IssuerStatus::Suspended => {
+                if previous == IssuerStatus::Active {
+                    Self::release_active_capacity(&env);
+                }
+                if previous != IssuerStatus::Revoked {
+                    // Fix the earliest reactivation time from the cooldown in
+                    // force now. A later cooldown change does not move it.
+                    let cooldown = Self::get_reactivation_cooldown(env.clone());
+                    let earliest = now.saturating_add(cooldown);
+                    env.storage()
+                        .persistent()
+                        .set(&DataKey::ReactivatableAt(issuer_id_hash.clone()), &earliest);
+                    Self::extend_reactivatable_ttl(env.clone(), &issuer_id_hash);
+                }
+            }
+            IssuerStatus::Revoked => {
+                if previous == IssuerStatus::Active {
+                    Self::release_active_capacity(&env);
+                }
+            }
+        }
+
+        record.status = status.clone();
         record.updated_at = now;
         record.status_effective_ledger = effective_ledger;
         record.status_effective_timestamp = now;
         env.storage().persistent().set(&key, &record);
         Self::extend_issuer_key_ttl(env.clone(), &key);
 
+        let epoch = Self::bump_epoch(&env);
         match status {
             IssuerStatus::Active => IssuerReactivated {
                 issuer_id_hash,
                 effective_ledger,
                 effective_timestamp: now,
+                reason_commitment,
                 updated_at: now,
+                epoch,
             }
             .publish(&env),
             IssuerStatus::Suspended => IssuerSuspended {
                 issuer_id_hash,
                 effective_ledger,
                 effective_timestamp: now,
+                reason_commitment,
                 updated_at: now,
+                epoch,
             }
             .publish(&env),
             IssuerStatus::Revoked => IssuerRevoked {
                 issuer_id_hash,
                 effective_ledger,
                 effective_timestamp: now,
+                reason_commitment,
                 updated_at: now,
+                epoch,
             }
             .publish(&env),
         }
         Ok(())
+    }
+
+    /// Advances the registry epoch by one and returns the new value.
+    /// Overflow is explicit: at `u64::MAX` the call panics rather than wrapping,
+    /// which is unreachable in practice (one bump per mutation).
+    fn bump_epoch(env: &Env) -> u64 {
+        let current = Self::get_issuer_epoch(env.clone());
+        let next = current
+            .checked_add(1)
+            .unwrap_or_else(|| panic!("issuer epoch overflow: reached maximum"));
+        env.storage().instance().set(&DataKey::IssuerEpoch, &next);
+        Self::extend_instance_ttl(env.clone());
+        next
+    }
+
+    /// Reserves one active-issuer slot, rejecting if the governed capacity is
+    /// already full. Increments the active count on success.
+    fn reserve_active_capacity(env: &Env) -> Result<(), IssuerError> {
+        let count = Self::get_active_issuer_count(env.clone());
+        let max = Self::get_max_active_issuers(env.clone());
+        if count >= max {
+            return Err(IssuerError::IssuerCapacityExceeded);
+        }
+        let next = count
+            .checked_add(1)
+            .ok_or(IssuerError::IssuerCapacityExceeded)?;
+        env.storage()
+            .instance()
+            .set(&DataKey::ActiveIssuerCount, &next);
+        Self::extend_instance_ttl(env.clone());
+        Ok(())
+    }
+
+    /// Releases one active-issuer slot. Saturates at zero as a defensive
+    /// measure; the accounting never underflows on a valid transition.
+    fn release_active_capacity(env: &Env) {
+        let count = Self::get_active_issuer_count(env.clone());
+        let next = count.saturating_sub(1);
+        env.storage()
+            .instance()
+            .set(&DataKey::ActiveIssuerCount, &next);
+        Self::extend_instance_ttl(env.clone());
+    }
+
+    fn earliest_reactivation(env: &Env, issuer_id_hash: &BytesN<32>) -> u64 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ReactivatableAt(issuer_id_hash.clone()))
+            .unwrap_or(0)
+    }
+
+    fn extend_reactivatable_ttl(env: Env, issuer_id_hash: &BytesN<32>) {
+        env.storage().persistent().extend_ttl(
+            &DataKey::ReactivatableAt(issuer_id_hash.clone()),
+            TTL_THRESHOLD_LEDGERS,
+            TTL_EXTEND_TO_LEDGERS,
+        );
     }
 
     fn extend_instance_ttl(env: Env) {
@@ -1175,13 +1575,22 @@ mod test {
             &bytes(&env, 2),
             &bytes(&env, 99),
         );
-        client.suspend_issuer(&issuer_id);
+        client.suspend_issuer(
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
+        );
         assert!(!client.is_active_issuer(&issuer_id));
 
-        client.reactivate_issuer(&issuer_id);
+        client.reactivate_issuer(
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
+        );
         assert!(client.is_active_issuer(&issuer_id));
 
-        client.revoke_issuer(&issuer_id);
+        client.revoke_issuer(
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
+        );
         assert!(!client.is_active_issuer(&issuer_id));
     }
 
@@ -1219,9 +1628,15 @@ mod test {
             &bytes(&env, 2),
             &bytes(&env, 99),
         );
-        client.revoke_issuer(&issuer_id);
+        client.revoke_issuer(
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
+        );
 
-        let result = client.try_reactivate_issuer(&issuer_id);
+        let result = client.try_reactivate_issuer(
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
+        );
         assert_eq!(result, Err(Ok(IssuerError::InvalidTransition)));
     }
 
@@ -1494,7 +1909,10 @@ mod test {
             &bytes(&env, 2),
             &bytes(&env, 99),
         );
-        client.revoke_issuer(&issuer_id);
+        client.revoke_issuer(
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
+        );
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             client.update_issuer(&issuer_id, &bytes(&env, 99));
@@ -1520,7 +1938,10 @@ mod test {
             &bytes(&env, 2),
             &bytes(&env, 99),
         );
-        client.suspend_issuer(&issuer_id);
+        client.suspend_issuer(
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
+        );
 
         assert_eq!(
             env.events().all().events().len(),
@@ -1542,8 +1963,14 @@ mod test {
             &bytes(&env, 2),
             &bytes(&env, 99),
         );
-        client.suspend_issuer(&issuer_id);
-        client.reactivate_issuer(&issuer_id);
+        client.suspend_issuer(
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
+        );
+        client.reactivate_issuer(
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
+        );
 
         assert_eq!(
             env.events().all().events().len(),
@@ -1565,7 +1992,10 @@ mod test {
             &bytes(&env, 2),
             &bytes(&env, 99),
         );
-        client.revoke_issuer(&issuer_id);
+        client.revoke_issuer(
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
+        );
 
         assert_eq!(
             env.events().all().events().len(),
@@ -1601,7 +2031,10 @@ mod test {
         let new_address = Address::from_str(&env, ISSUER_TWO);
 
         client.register_issuer(&issuer_id, &old_address, &bytes(&env, 2), &bytes(&env, 99));
-        client.revoke_issuer(&issuer_id);
+        client.revoke_issuer(
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
+        );
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             client.rotate_issuer_address(&issuer_id, &new_address);
@@ -1638,11 +2071,17 @@ mod test {
         assert_eq!(env.events().all().events().len(), 1);
 
         // suspend
-        client.suspend_issuer(&issuer_id);
+        client.suspend_issuer(
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
+        );
         assert_eq!(env.events().all().events().len(), 1);
 
         // reactivate
-        client.reactivate_issuer(&issuer_id);
+        client.reactivate_issuer(
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
+        );
         assert_eq!(env.events().all().events().len(), 1);
 
         // rotate address
@@ -1650,7 +2089,10 @@ mod test {
         assert_eq!(env.events().all().events().len(), 1);
 
         // revoke
-        client.revoke_issuer(&issuer_id);
+        client.revoke_issuer(
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
+        );
         assert_eq!(env.events().all().events().len(), 1);
     }
 
@@ -1706,7 +2148,10 @@ mod test {
             },
         }]);
 
-        let result = client.try_revoke_issuer(&issuer_id);
+        let result = client.try_revoke_issuer(
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
+        );
         assert!(
             result.is_err(),
             "the issuer's own valid signature must not authorize revoking itself; only the admin's signature may"

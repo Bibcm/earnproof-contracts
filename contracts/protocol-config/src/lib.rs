@@ -17,6 +17,7 @@ enum DataKey {
     ScopedPause(PauseScope),
     ConfigVersion,
     SchemaVersion(u32),
+    PendingAdmin,
     /// Allowlist entry: maps a WASM hash to the target contract version it
     /// must install.  Only hashes pre-approved by the admin may be applied.
     AllowedWasm(BytesN<32>),
@@ -25,6 +26,25 @@ enum DataKey {
     ContractVersion,
     Successor,
     Decommissioned,
+}
+
+// ── admin transfer events ─────────────────────────────────────────────────────────
+
+#[contractevent]
+pub struct AdminTransferNominated {
+    pub pending_admin: Address,
+    pub nominated_by: Address,
+}
+
+#[contractevent]
+pub struct AdminTransferAccepted {
+    pub new_admin: Address,
+}
+
+#[contractevent]
+pub struct AdminTransferCancelled {
+    pub pending_admin: Address,
+    pub cancelled_by: Address,
 }
 
 // ── existing events ─────────────────────────────────────────────────────────
@@ -149,14 +169,69 @@ impl ProtocolConfigContract {
             .ok_or(ContractError::NotInitialized)
     }
 
+    /// Machine-readable interface version this contract exposes to consumers.
+    pub fn interface_version(_env: Env) -> InterfaceVersion {
+        PROTOCOL_CONFIG_INTERFACE_VERSION
+    }
+
     pub fn set_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
+    pub fn nominate_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
         Self::ensure_not_decommissioned(&env)?;
         let admin = Self::get_admin(env.clone())?;
         Self::require_valid_principal(&new_admin)?;
         Self::require_auth(&admin);
-        env.storage().instance().set(&DataKey::Admin, &new_admin);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        AdminTransferNominated {
+            pending_admin: new_admin.clone(),
+            nominated_by: admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn accept_admin(env: Env) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let pending_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(ContractError::NotFound)?;
+        Self::require_auth(&pending_admin);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Admin, &pending_admin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+
         Self::bump_config_version(env.clone());
-        AdminChanged { new_admin }.publish(&env);
+
+        AdminTransferAccepted {
+            new_admin: pending_admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn cancel_admin_transfer(env: Env) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+
+        let pending_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(ContractError::NotFound)?;
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+
+        AdminTransferCancelled {
+            pending_admin,
+            cancelled_by: admin,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -619,6 +694,14 @@ mod test {
     }
 
     // ── existing tests ────────────────────────────────────────────────────────
+
+    #[test]
+    fn exposes_a_stable_interface_version() {
+        let (_env, client, _admin) = setup();
+        let version = client.interface_version();
+        assert_eq!(version, earnproof_shared::PROTOCOL_CONFIG_INTERFACE_VERSION);
+        assert_eq!(version.major, 1);
+    }
 
     #[test]
     fn initializes_config_defaults() {
