@@ -74,6 +74,8 @@ mod tests {
     const PROOF_REVOKE_MEM_MAX: u64 = 150_000;
     const PROOF_VALIDITY_CHECK_CPU_MAX: u64 = 200_000;
     const PROOF_VALIDITY_CHECK_MEM_MAX: u64 = 100_000;
+    const PROOF_REGISTER_BATCH_MAX_CPU_MAX: u64 = 5_600_000;
+    const PROOF_REGISTER_BATCH_MAX_MEM_MAX: u64 = 1_750_000;
 
     // -----------------------------------------------------------------------
     // Test Utilities
@@ -525,6 +527,33 @@ mod tests {
             "proof_registry.is_valid_proof",
             PROOF_VALIDITY_CHECK_CPU_MAX,
             PROOF_VALIDITY_CHECK_MEM_MAX,
+        );
+    }
+
+    #[test]
+    fn proof_registry_register_proofs_batch_max_size_budget() {
+        let env = Env::default();
+        let (proof_client, _protocol, _issuer_registry, issuer) = setup_proof_registry(&env);
+
+        let mut batch = soroban_sdk::Vec::new(&env);
+        for seed in 0..earnproof_shared::MAX_PROOF_BATCH_SIZE as u8 {
+            batch.push_back(earnproof_shared::ProofRegistrationInput {
+                proof_id_hash: bytes(&env, seed),
+                commitment_hash: bytes(&env, seed.wrapping_add(100)),
+                schema_version: 1,
+                expires_at: 2_000,
+            });
+        }
+
+        env.cost_estimate().budget().reset_unlimited();
+
+        proof_client.register_proofs_batch(&batch, &issuer);
+
+        assert_budget(
+            &env,
+            "proof_registry.register_proofs_batch(max_size)",
+            PROOF_REGISTER_BATCH_MAX_CPU_MAX,
+            PROOF_REGISTER_BATCH_MAX_MEM_MAX,
         );
     }
 

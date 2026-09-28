@@ -2,12 +2,12 @@
 
 #[allow(unused_imports)]
 use earnproof_shared::{
-    ContractError, MigrationStatus, PauseScope, ProofError, ProofRecord, ProofStatus, TtlStatus,
-    UpgradeApproval, UpgradeReceipt, MAX_MIGRATION_BATCH, MIGRATION_STATUS_VERSION,
-    TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
+    ContractError, MigrationStatus, PauseScope, ProofError, ProofRecord, ProofRegistrationInput,
+    ProofStatus, TtlStatus, UpgradeApproval, UpgradeReceipt, MAX_MIGRATION_BATCH,
+    MAX_PROOF_BATCH_SIZE, MIGRATION_STATUS_VERSION, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
 };
 use soroban_sdk::{
-    contract, contractclient, contractevent, contractimpl, contracttype, Address, BytesN, Env,
+    contract, contractclient, contractevent, contractimpl, contracttype, Address, BytesN, Env, Vec,
 };
 
 #[contractclient(name = "ProtocolConfigContractClient")]
@@ -96,6 +96,14 @@ pub struct ContractDecommissioned {
     pub old_instance: Address,
     pub successor_instance: Address,
     pub activated_by: Address,
+}
+
+/// Emitted once per proof successfully registered via `register_proofs_batch`,
+/// in the same order the entries were supplied.
+#[contractevent]
+pub struct ProofRegisteredInBatch {
+    pub proof_id_hash: BytesN<32>,
+    pub issuer_address: Address,
 }
 
 #[contractimpl]
@@ -270,6 +278,111 @@ impl ProofRegistryContract {
 
         env.storage().persistent().set(&key, &record);
         Self::extend_proof_key_ttl(env, &key);
+        Ok(())
+    }
+
+    /// Registers a strictly bounded batch of proofs for a single authorized
+    /// issuer, atomically.
+    ///
+    /// The batch is validated and written entry-by-entry, in order. If any
+    /// entry fails validation (duplicate proof id — whether already on chain
+    /// or repeated within this batch, zero schema version, expired
+    /// timestamp, or an unapproved schema version), the call returns that
+    /// entry's error and — per Soroban's invocation semantics — every write
+    /// and event already produced earlier in this same call is discarded
+    /// along with it, so no partial batch is ever committed.
+    ///
+    /// Issuer authorization, pause state, and issuer-active state are each
+    /// checked once for the whole batch, reusing the same checks
+    /// `register_proof` performs for a single proof. `is_schema_version_approved`
+    /// is checked per entry, since entries may use different schema versions.
+    ///
+    /// Emits one [`ProofRegisteredInBatch`] event per registered proof, in
+    /// input order.
+    pub fn register_proofs_batch(
+        env: Env,
+        entries: Vec<ProofRegistrationInput>,
+        issuer_address: Address,
+    ) -> Result<(), ProofError> {
+        Self::ensure_not_decommissioned(&env)?;
+        Self::require_valid_issuer_address(&issuer_address)?;
+
+        let len = entries.len();
+        if len == 0 || len > MAX_PROOF_BATCH_SIZE {
+            return Err(ProofError::InvalidBatchSize);
+        }
+
+        let protocol_config =
+            Self::get_protocol_config(env.clone()).map_err(|_| ProofError::ProofNotFound)?;
+        let issuer_registry =
+            Self::get_issuer_registry(env.clone()).map_err(|_| ProofError::ProofNotFound)?;
+        if issuer_address == env.current_contract_address()
+            || issuer_address == protocol_config
+            || issuer_address == issuer_registry
+        {
+            return Err(ProofError::InvalidAddress);
+        }
+        Self::require_auth(&issuer_address);
+
+        // Check 1: Contract paused (highest precedence — most external state)
+        let protocol_client = ProtocolConfigContractClient::new(&env, &protocol_config);
+        if protocol_client.is_paused() {
+            return Err(ProofError::ContractPaused);
+        }
+
+        // Check 2: Issuer active (issuer-specific state) — checked once for
+        // the whole batch, since every entry shares the same issuer.
+        let issuer_client = IssuerRegistryContractClient::new(&env, &issuer_registry);
+        if !issuer_client.is_active_address(&issuer_address) {
+            return Err(ProofError::IssuerInactive);
+        }
+
+        let now = env.ledger().timestamp();
+
+        for entry in entries.iter() {
+            if entry.schema_version == 0 {
+                return Err(ProofError::InvalidSchemaVersion);
+            }
+
+            if entry.expires_at <= now {
+                return Err(ProofError::ProofExpired);
+            }
+
+            // Check 3: Schema supported (protocol configuration state)
+            if !protocol_client.is_schema_version_approved(&entry.schema_version) {
+                return Err(ProofError::UnsupportedSchema);
+            }
+
+            // Check 4: Uniqueness constraint (storage precondition). A proof
+            // id repeated earlier in this same batch is already visible here,
+            // since writes made earlier in this call are readable within it —
+            // so this single check also rejects intra-batch duplicates.
+            let key = DataKey::Proof(entry.proof_id_hash.clone());
+            if env.storage().persistent().has(&key) {
+                return Err(ProofError::ProofAlreadyRegistered);
+            }
+
+            let record = ProofRecord {
+                proof_id_hash: entry.proof_id_hash.clone(),
+                commitment_hash: entry.commitment_hash.clone(),
+                issuer_address: issuer_address.clone(),
+                status: ProofStatus::Active,
+                schema_version: entry.schema_version,
+                expires_at: entry.expires_at,
+                created_at: now,
+                revoked_at: 0,
+            };
+
+            env.storage().persistent().set(&key, &record);
+            Self::extend_proof_key_ttl(env.clone(), &key);
+
+            ProofRegisteredInBatch {
+                proof_id_hash: entry.proof_id_hash.clone(),
+                issuer_address: issuer_address.clone(),
+            }
+            .publish(&env);
+        }
+
         Ok(())
     }
 
@@ -1835,5 +1948,281 @@ mod test {
         assert!(pc_client.is_paused());
         pc_client.unpause();
         assert!(!pc_client.is_paused());
+    }
+
+    // ── bounded batch proof registration ─────────────────────────────────────
+
+    use earnproof_shared::{ProofRegistrationInput, MAX_PROOF_BATCH_SIZE};
+
+    fn batch_input(env: &Env, seed: u8, expires_at: u64) -> ProofRegistrationInput {
+        ProofRegistrationInput {
+            proof_id_hash: bytes(env, seed),
+            commitment_hash: bytes(env, seed.wrapping_add(100)),
+            schema_version: 1,
+            expires_at,
+        }
+    }
+
+    fn make_batch(
+        env: &Env,
+        seeds: &[u8],
+        expires_at: u64,
+    ) -> soroban_sdk::Vec<ProofRegistrationInput> {
+        let mut batch = soroban_sdk::Vec::new(env);
+        for &seed in seeds {
+            batch.push_back(batch_input(env, seed, expires_at));
+        }
+        batch
+    }
+
+    #[test]
+    fn register_proofs_batch_registers_every_entry_in_order() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let seeds = [1u8, 2, 3];
+        let batch = make_batch(&env, &seeds, 2_000);
+
+        client.register_proofs_batch(&batch, &issuer);
+
+        for &seed in &seeds {
+            let proof_id = bytes(&env, seed);
+            assert!(client.is_valid_proof(&proof_id));
+            let record = client.get_proof(&proof_id);
+            assert_eq!(record.issuer_address, issuer);
+            assert_eq!(record.status, ProofStatus::Active);
+        }
+    }
+
+    #[test]
+    fn register_proofs_batch_emits_events_in_input_order() {
+        use soroban_sdk::testutils::Events as _;
+        use soroban_sdk::xdr::{ContractEventBody, ScAddress, ScVal};
+        use soroban_sdk::{Map, Symbol, TryFromVal, Val};
+
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let seeds = [5u8, 6, 7];
+        let batch = make_batch(&env, &seeds, 2_000);
+
+        client.register_proofs_batch(&batch, &issuer);
+
+        let events = env.events().all();
+        let proof_ids_in_event_order: std::vec::Vec<BytesN<32>> = events
+            .events()
+            .iter()
+            .filter_map(|event| {
+                let contract_id = event.contract_id.clone()?;
+                let emitting_contract =
+                    Address::try_from_val(&env, &ScVal::Address(ScAddress::Contract(contract_id)))
+                        .ok()?;
+                if emitting_contract != client.address {
+                    return None;
+                }
+                let ContractEventBody::V0(body) = &event.body;
+                let first_topic = body.topics.first()?;
+                let first_topic_val = Val::try_from_val(&env, first_topic).ok()?;
+                let discriminant = Symbol::try_from_val(&env, &first_topic_val).ok()?;
+                if discriminant != Symbol::new(&env, "proof_registered_in_batch") {
+                    return None;
+                }
+                let data_val = Val::try_from_val(&env, &body.data).ok()?;
+                let map = Map::<Symbol, Val>::try_from_val(&env, &data_val).ok()?;
+                let raw = map.get(Symbol::new(&env, "proof_id_hash"))?;
+                BytesN::<32>::try_from_val(&env, &raw).ok()
+            })
+            .collect();
+
+        assert_eq!(
+            proof_ids_in_event_order,
+            std::vec![bytes(&env, 5), bytes(&env, 6), bytes(&env, 7)]
+        );
+    }
+
+    #[test]
+    fn register_proofs_batch_rejects_empty_batch() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let empty: soroban_sdk::Vec<ProofRegistrationInput> = soroban_sdk::Vec::new(&env);
+
+        let result = client.try_register_proofs_batch(&empty, &issuer);
+        assert_eq!(result, Err(Ok(ProofError::InvalidBatchSize)));
+    }
+
+    #[test]
+    fn register_proofs_batch_accepts_exact_limit_batch() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let seeds: std::vec::Vec<u8> = (0..MAX_PROOF_BATCH_SIZE as u16).map(|i| i as u8).collect();
+        let batch = make_batch(&env, &seeds, 2_000);
+
+        client.register_proofs_batch(&batch, &issuer);
+
+        for &seed in &seeds {
+            assert!(client.is_valid_proof(&bytes(&env, seed)));
+        }
+    }
+
+    #[test]
+    fn register_proofs_batch_rejects_over_limit_batch() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let seeds: std::vec::Vec<u8> = (0..(MAX_PROOF_BATCH_SIZE as u16 + 1))
+            .map(|i| i as u8)
+            .collect();
+        let batch = make_batch(&env, &seeds, 2_000);
+
+        let result = client.try_register_proofs_batch(&batch, &issuer);
+        assert_eq!(result, Err(Ok(ProofError::InvalidBatchSize)));
+
+        // Nothing from the rejected over-limit batch may have been written.
+        for &seed in &seeds {
+            assert!(!client.is_valid_proof(&bytes(&env, seed)));
+        }
+    }
+
+    #[test]
+    fn register_proofs_batch_rejects_duplicate_within_batch() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let mut batch = soroban_sdk::Vec::new(&env);
+        batch.push_back(batch_input(&env, 1, 2_000));
+        batch.push_back(batch_input(&env, 2, 2_000));
+        batch.push_back(batch_input(&env, 1, 2_000)); // duplicate of the first
+
+        let result = client.try_register_proofs_batch(&batch, &issuer);
+        assert_eq!(result, Err(Ok(ProofError::ProofAlreadyRegistered)));
+
+        // Atomicity: even the entries that would have succeeded (seed 1, 2)
+        // must not have been committed.
+        assert!(!client.is_valid_proof(&bytes(&env, 1)));
+        assert!(!client.is_valid_proof(&bytes(&env, 2)));
+    }
+
+    #[test]
+    fn register_proofs_batch_rejects_duplicate_against_existing_chain_state() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        client.register_proof(&bytes(&env, 1), &bytes(&env, 2), &issuer, &1, &2_000);
+
+        let batch = make_batch(&env, &[9, 1, 10], 2_000);
+        let result = client.try_register_proofs_batch(&batch, &issuer);
+        assert_eq!(result, Err(Ok(ProofError::ProofAlreadyRegistered)));
+
+        // The batch entries preceding the collision must not have been committed.
+        assert!(!client.is_valid_proof(&bytes(&env, 9)));
+        assert!(!client.is_valid_proof(&bytes(&env, 10)));
+    }
+
+    #[test]
+    fn register_proofs_batch_rejects_mixed_invalid_entries() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let now = env.ledger().timestamp();
+
+        let mut batch = soroban_sdk::Vec::new(&env);
+        batch.push_back(batch_input(&env, 1, 2_000)); // valid
+        batch.push_back(ProofRegistrationInput {
+            proof_id_hash: bytes(&env, 2),
+            commitment_hash: bytes(&env, 102),
+            schema_version: 0, // invalid: zero schema version
+            expires_at: 2_000,
+        });
+        batch.push_back(batch_input(&env, 3, now)); // invalid: not in the future
+
+        let result = client.try_register_proofs_batch(&batch, &issuer);
+        assert_eq!(result, Err(Ok(ProofError::InvalidSchemaVersion)));
+        assert!(!client.is_valid_proof(&bytes(&env, 1)));
+    }
+
+    #[test]
+    fn register_proofs_batch_rejects_unapproved_schema_version() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let mut batch = soroban_sdk::Vec::new(&env);
+        batch.push_back(batch_input(&env, 1, 2_000));
+        batch.push_back(ProofRegistrationInput {
+            proof_id_hash: bytes(&env, 2),
+            commitment_hash: bytes(&env, 102),
+            schema_version: 42, // never approved
+            expires_at: 2_000,
+        });
+
+        let result = client.try_register_proofs_batch(&batch, &issuer);
+        assert_eq!(result, Err(Ok(ProofError::UnsupportedSchema)));
+        assert!(!client.is_valid_proof(&bytes(&env, 1)));
+    }
+
+    #[test]
+    fn register_proofs_batch_rejects_expired_entry() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let now = env.ledger().timestamp();
+        let batch = make_batch(&env, &[1], now);
+
+        let result = client.try_register_proofs_batch(&batch, &issuer);
+        assert_eq!(result, Err(Ok(ProofError::ProofExpired)));
+    }
+
+    #[test]
+    fn register_proofs_batch_rejects_when_paused() {
+        let (env, client, pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        pc.pause();
+        let batch = make_batch(&env, &[1, 2], 2_000);
+
+        let result = client.try_register_proofs_batch(&batch, &issuer);
+        assert_eq!(result, Err(Ok(ProofError::ContractPaused)));
+    }
+
+    #[test]
+    fn register_proofs_batch_rejects_inactive_issuer() {
+        let (env, client, _pc, ir, _ir_id) = setup();
+        let inactive_issuer = Address::from_str(
+            &env,
+            "GBXHUHG5FGYLPD6RHL2MKWMP572O6KUXCZXDZJXS4T57ZTMAKBN7DWXN",
+        );
+        ir.register_issuer(
+            &bytes(&env, 10),
+            &inactive_issuer,
+            &bytes(&env, 11),
+            &bytes(&env, 99),
+        );
+        ir.suspend_issuer(&bytes(&env, 10), &bytes(&env, 1));
+        let batch = make_batch(&env, &[1, 2], 2_000);
+
+        let result = client.try_register_proofs_batch(&batch, &inactive_issuer);
+        assert_eq!(result, Err(Ok(ProofError::IssuerInactive)));
+    }
+
+    #[test]
+    fn register_proofs_batch_requires_issuer_auth() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let batch = make_batch(&env, &[1, 2], 2_000);
+
+        env.set_auths(&[]);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.register_proofs_batch(&batch, &issuer);
+        }));
+        assert!(
+            result.is_err(),
+            "batch registration must require issuer auth"
+        );
+        assert!(!client.is_valid_proof(&bytes(&env, 1)));
+    }
+
+    #[test]
+    fn register_proofs_batch_rejects_decommissioned_contract() {
+        let (env, client, ..) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let hash = bytes(&env, 0x11);
+        let admin = Address::from_str(&env, ADMIN);
+        client.nominate_successor(&admin);
+        client.activate_successor();
+        let _ = hash;
+
+        let batch = make_batch(&env, &[1], 2_000);
+        let result = client.try_register_proofs_batch(&batch, &issuer);
+        assert_eq!(result, Err(Ok(ProofError::ProofNotFound)));
     }
 }
