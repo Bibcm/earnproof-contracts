@@ -40,6 +40,7 @@ fn duplicate_issuer_id_emits_no_event() {
             &hash(&deployment.env, 0x01),
             &other,
             &hash(&deployment.env, 0xDD),
+            &hash(&deployment.env, 0x99),
         );
     });
 
@@ -56,6 +57,7 @@ fn duplicate_issuer_address_emits_no_event() {
             &hash(&deployment.env, 0x09),
             &existing_address,
             &hash(&deployment.env, 0xDD),
+            &hash(&deployment.env, 0x99),
         );
     });
 
@@ -174,7 +176,10 @@ fn zero_schema_version_emits_no_event() {
 #[test]
 fn revoked_issuer_registration_emits_no_event() {
     let deployment = Deployment::new();
-    deployment.issuers.revoke_issuer(&deployment.issuer_id);
+    deployment.issuers.revoke_issuer(
+        &deployment.issuer_id,
+        &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+    );
     let expires = deployment.env.ledger().timestamp() + 100_000;
 
     let events = attempt_failure(&deployment, || {
@@ -193,7 +198,10 @@ fn revoked_issuer_registration_emits_no_event() {
 #[test]
 fn suspended_issuer_registration_emits_no_event() {
     let deployment = Deployment::new();
-    deployment.issuers.suspend_issuer(&deployment.issuer_id);
+    deployment.issuers.suspend_issuer(
+        &deployment.issuer_id,
+        &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+    );
     let expires = deployment.env.ledger().timestamp() + 100_000;
 
     let events = attempt_failure(&deployment, || {
@@ -215,10 +223,16 @@ fn reactivating_a_revoked_issuer_emits_no_event() {
     // `issuer_reactivated` would tell every indexer the issuer is trustworthy
     // again — the most damaging ghost event in this workspace.
     let deployment = Deployment::new();
-    deployment.issuers.revoke_issuer(&deployment.issuer_id);
+    deployment.issuers.revoke_issuer(
+        &deployment.issuer_id,
+        &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+    );
 
     let events = attempt_failure(&deployment, || {
-        deployment.issuers.reactivate_issuer(&deployment.issuer_id);
+        deployment.issuers.reactivate_issuer(
+            &deployment.issuer_id,
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+        );
     });
 
     assert_silent(&events, "reactivating a revoked issuer");
@@ -227,7 +241,10 @@ fn reactivating_a_revoked_issuer_emits_no_event() {
 #[test]
 fn updating_a_revoked_issuer_emits_no_event() {
     let deployment = Deployment::new();
-    deployment.issuers.revoke_issuer(&deployment.issuer_id);
+    deployment.issuers.revoke_issuer(
+        &deployment.issuer_id,
+        &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+    );
 
     let events = attempt_failure(&deployment, || {
         deployment
@@ -241,7 +258,10 @@ fn updating_a_revoked_issuer_emits_no_event() {
 #[test]
 fn rotating_a_revoked_issuer_address_emits_no_event() {
     let deployment = Deployment::new();
-    deployment.issuers.revoke_issuer(&deployment.issuer_id);
+    deployment.issuers.revoke_issuer(
+        &deployment.issuer_id,
+        &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+    );
     let replacement = Address::generate(&deployment.env);
 
     let events = attempt_failure(&deployment, || {
@@ -258,9 +278,12 @@ fn rotating_to_a_taken_address_emits_no_event() {
     let deployment = Deployment::new();
     let second_id = hash(&deployment.env, 0x02);
     let second_address = Address::generate(&deployment.env);
-    deployment
-        .issuers
-        .register_issuer(&second_id, &second_address, &hash(&deployment.env, 0xBB));
+    deployment.issuers.register_issuer(
+        &second_id,
+        &second_address,
+        &hash(&deployment.env, 0xBB),
+        &hash(&deployment.env, 0x99),
+    );
 
     let events = attempt_failure(&deployment, || {
         // Rotating the first issuer onto the second issuer's address.
@@ -318,9 +341,10 @@ fn suspending_an_unknown_issuer_emits_no_event() {
     let deployment = Deployment::new();
 
     let events = attempt_failure(&deployment, || {
-        deployment
-            .issuers
-            .suspend_issuer(&hash(&deployment.env, 0x7F));
+        deployment.issuers.suspend_issuer(
+            &hash(&deployment.env, 0x7F),
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+        );
     });
 
     assert_silent(&events, "suspending an unknown issuer");
@@ -377,11 +401,17 @@ fn a_rejected_call_changes_neither_events_nor_storage() {
     let before = deployment.issuers.get_issuer(&deployment.issuer_id);
     let version_before = deployment.config.get_config_version();
 
-    deployment.issuers.revoke_issuer(&deployment.issuer_id);
+    deployment.issuers.revoke_issuer(
+        &deployment.issuer_id,
+        &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+    );
     let after_revocation = deployment.issuers.get_issuer(&deployment.issuer_id);
 
     let events = attempt_failure(&deployment, || {
-        deployment.issuers.reactivate_issuer(&deployment.issuer_id);
+        deployment.issuers.reactivate_issuer(
+            &deployment.issuer_id,
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+        );
     });
 
     assert_silent(&events, "rejected reactivation");

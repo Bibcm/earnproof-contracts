@@ -55,11 +55,17 @@ fn each_mutation_publishes_exactly_one_event() {
         ),
         (
             "suspend_issuer",
-            std::boxed::Box::new(|| deployment.issuers.suspend_issuer(&deployment.issuer_id))
+            std::boxed::Box::new(|| deployment.issuers.suspend_issuer(
+                &deployment.issuer_id,
+                &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32])
+            ))
         ),
         (
             "reactivate_issuer",
-            std::boxed::Box::new(|| deployment.issuers.reactivate_issuer(&deployment.issuer_id))
+            std::boxed::Box::new(|| deployment.issuers.reactivate_issuer(
+                &deployment.issuer_id,
+                &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32])
+            ))
         ),
         (
             "update_issuer",
@@ -79,7 +85,10 @@ fn each_mutation_publishes_exactly_one_event() {
         ),
         (
             "set_admin",
-            std::boxed::Box::new(|| deployment.config.set_admin(&successor))
+            std::boxed::Box::new(|| {
+                deployment.config.nominate_admin(&successor);
+                deployment.config.accept_admin()
+            })
         ),
     ];
 
@@ -112,8 +121,18 @@ fn a_multi_step_sequence_publishes_events_in_invocation_order() {
     };
 
     record(deployment.capture(|| deployment.config.pause()));
-    record(deployment.capture(|| deployment.issuers.suspend_issuer(&deployment.issuer_id)));
-    record(deployment.capture(|| deployment.issuers.revoke_issuer(&deployment.issuer_id)));
+    record(deployment.capture(|| {
+        deployment.issuers.suspend_issuer(
+            &deployment.issuer_id,
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+        )
+    }));
+    record(deployment.capture(|| {
+        deployment.issuers.revoke_issuer(
+            &deployment.issuer_id,
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+        )
+    }));
     record(deployment.capture(|| deployment.config.unpause()));
 
     assert_eq!(observed.len(), 4, "one event per step");
@@ -151,6 +170,7 @@ fn a_failed_step_leaves_no_gap_in_the_sequence() {
             &deployment.issuer_id,
             &Address::generate(&deployment.env),
             &hash(&deployment.env, 0xD1),
+            &hash(&deployment.env, 0x99),
         );
     });
     assert!(rejected.is_empty(), "the rejected step must be silent");
@@ -260,11 +280,17 @@ fn no_event_payload_carries_protected_data() {
         ),
         (
             "suspend_issuer",
-            std::boxed::Box::new(|| deployment.issuers.suspend_issuer(&deployment.issuer_id))
+            std::boxed::Box::new(|| deployment.issuers.suspend_issuer(
+                &deployment.issuer_id,
+                &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32])
+            ))
         ),
         (
             "reactivate_issuer",
-            std::boxed::Box::new(|| deployment.issuers.reactivate_issuer(&deployment.issuer_id))
+            std::boxed::Box::new(|| deployment.issuers.reactivate_issuer(
+                &deployment.issuer_id,
+                &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32])
+            ))
         ),
         (
             "rotate_issuer_address",
@@ -276,11 +302,17 @@ fn no_event_payload_carries_protected_data() {
         ),
         (
             "revoke_issuer",
-            std::boxed::Box::new(|| deployment.issuers.revoke_issuer(&deployment.issuer_id))
+            std::boxed::Box::new(|| deployment.issuers.revoke_issuer(
+                &deployment.issuer_id,
+                &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32])
+            ))
         ),
         (
             "set_admin",
-            std::boxed::Box::new(|| deployment.config.set_admin(&successor))
+            std::boxed::Box::new(|| {
+                deployment.config.nominate_admin(&successor);
+                deployment.config.accept_admin()
+            })
         ),
     ];
 
@@ -304,7 +336,7 @@ fn issuer_events_carry_hashes_rather_than_raw_identifiers() {
     let events = deployment.capture(|| {
         deployment
             .issuers
-            .register_issuer(&issuer_id, &next, &metadata)
+            .register_issuer(&issuer_id, &next, &metadata, &metadata)
     });
 
     let event = &events[0];
@@ -352,8 +384,12 @@ fn no_event_is_published_by_a_contract_that_did_not_act() {
     let config_events = deployment.capture(|| deployment.config.pause());
     assert_eq!(config_events[0].contract, deployment.config.address);
 
-    let issuer_events =
-        deployment.capture(|| deployment.issuers.suspend_issuer(&deployment.issuer_id));
+    let issuer_events = deployment.capture(|| {
+        deployment.issuers.suspend_issuer(
+            &deployment.issuer_id,
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+        )
+    });
     assert_eq!(issuer_events[0].contract, deployment.issuers.address);
 }
 

@@ -99,13 +99,13 @@ fn per_record_namespaces_hold_one_entry_per_record() {
     let deployment = exercised_deployment();
     let env = &deployment.env;
 
-    // Four issuers, each with a record and a reverse-index entry. The rotated
-    // address replaces the old index entry rather than adding to it, so those
-    // two counts are eight and not nine. The issuer left suspended adds one
-    // ReactivatableAt entry, for nine persistent keys in total.
+    // Three issuers, each with a record and a reverse-index entry. The rotated
+    // address replaces the old index entry rather than adding to it, so the
+    // count is twelve including one TTL tracker for every record and reverse
+    // index; the rotated address and its tracker replace their old entries.
     assert_eq!(
         keys_in(env, &deployment.issuers_id, StorageClass::Persistent).len(),
-        9
+        12
     );
 
     // Two proofs, one of them revoked in place.
@@ -114,11 +114,10 @@ fn per_record_namespaces_hold_one_entry_per_record() {
         2
     );
 
-    // Two schema versions, one approved and one deprecated. Deprecation keeps
-    // the key so that "never seen" stays distinguishable from "withdrawn".
+    // Two schema versions plus one scoped pause.
     assert_eq!(
         keys_in(env, &deployment.config_id, StorageClass::Persistent).len(),
-        2
+        3
     );
 }
 

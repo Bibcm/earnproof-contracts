@@ -59,9 +59,18 @@ fn apply(deployment: &Deployment, update: Update) {
         Update::Unpause => deployment.config.unpause(),
         Update::DeprecateSchema => deployment.config.deprecate_schema_version(&APPROVED_SCHEMA),
         Update::ApproveSchema => deployment.config.approve_schema_version(&APPROVED_SCHEMA),
-        Update::SuspendIssuer => deployment.issuers.suspend_issuer(&deployment.issuer_id),
-        Update::ReactivateIssuer => deployment.issuers.reactivate_issuer(&deployment.issuer_id),
-        Update::RevokeIssuer => deployment.issuers.revoke_issuer(&deployment.issuer_id),
+        Update::SuspendIssuer => deployment.issuers.suspend_issuer(
+            &deployment.issuer_id,
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+        ),
+        Update::ReactivateIssuer => deployment.issuers.reactivate_issuer(
+            &deployment.issuer_id,
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+        ),
+        Update::RevokeIssuer => deployment.issuers.revoke_issuer(
+            &deployment.issuer_id,
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+        ),
     }
 }
 
@@ -196,10 +205,7 @@ fn a_dependency_change_during_the_invocation_cannot_undo_the_committed_write() {
     // And the next registration observes the new state, with no carry-over from
     // the value the previous invocation read.
     let rejection = deployment.assert_rejected_and_atomic(&hash(&deployment.env, 0xB5));
-    assert_eq!(
-        rejection,
-        Rejection::Typed(ProofError::InvalidSchemaVersion)
-    );
+    assert_eq!(rejection, Rejection::Typed(ProofError::ContractPaused));
 }
 
 #[test]
@@ -215,14 +221,14 @@ fn a_dependency_change_during_a_failing_invocation_is_discarded() {
     });
     let racing =
         SelfPausingConfigClient::new(&deployment.env, &deployment.proofs.get_protocol_config());
-    deployment.issuers.suspend_issuer(&deployment.issuer_id);
+    deployment.issuers.suspend_issuer(
+        &deployment.issuer_id,
+        &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+    );
 
     let rejection = deployment.assert_rejected_and_atomic(&hash(&deployment.env, 0xB6));
 
-    assert_eq!(
-        rejection,
-        Rejection::Typed(ProofError::InvalidSchemaVersion)
-    );
+    assert_eq!(rejection, Rejection::Typed(ProofError::IssuerInactive));
     assert!(
         !racing.pause_flag(),
         "a dependency change made during a rejected registration survived it"
@@ -230,6 +236,9 @@ fn a_dependency_change_during_a_failing_invocation_is_discarded() {
 
     // The discarded change left nothing behind: once the issuer is active
     // again, registration works exactly as it would have before the failure.
-    deployment.issuers.reactivate_issuer(&deployment.issuer_id);
+    deployment.issuers.reactivate_issuer(
+        &deployment.issuer_id,
+        &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+    );
     deployment.register(0xB7);
 }

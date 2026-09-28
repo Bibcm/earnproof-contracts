@@ -57,8 +57,32 @@ pub fn contract_version_key(env: &Env) -> (Symbol,) {
     (Symbol::new(env, "ContractVersion"),)
 }
 
+pub fn instance_live_until_key(env: &Env) -> (Symbol,) {
+    (Symbol::new(env, "InstanceLiveUntil"),)
+}
+
 pub fn schema_version_key(env: &Env, version: u32) -> (Symbol, u32) {
     (Symbol::new(env, "SchemaVersion"), version)
+}
+
+#[allow(dead_code)]
+pub fn schema_record_key(env: &Env, version: u32) -> (Symbol, u32) {
+    (Symbol::new(env, "SchemaRecord"), version)
+}
+
+#[allow(dead_code)]
+pub fn protocol_config_version_key(env: &Env) -> (Symbol,) {
+    (Symbol::new(env, "ProtocolConfigVersion"),)
+}
+
+#[allow(dead_code)]
+pub fn issuer_registry_version_key(env: &Env) -> (Symbol,) {
+    (Symbol::new(env, "IssuerRegistryVersion"),)
+}
+
+#[allow(dead_code)]
+pub fn schema_ttl_key(env: &Env, version: u32) -> (Symbol, u32) {
+    (Symbol::new(env, "SchemaTtl"), version)
 }
 
 pub fn issuer_registry_key(env: &Env) -> (Symbol,) {
@@ -73,28 +97,25 @@ pub fn issuer_key(id: &BytesN<32>) -> (Symbol, BytesN<32>) {
     (symbol_short!("Issuer"), id.clone())
 }
 
+pub fn issuer_ttl_key(env: &Env, id: &BytesN<32>) -> (Symbol, BytesN<32>) {
+    (Symbol::new(env, "IssuerTtl"), id.clone())
+}
+
 pub fn address_issuer_key(env: &Env, address: &Address) -> (Symbol, Address) {
     (Symbol::new(env, "AddressIssuer"), address.clone())
+}
+
+pub fn address_ttl_key(env: &Env, address: &Address) -> (Symbol, Address) {
+    (Symbol::new(env, "AddressTtl"), address.clone())
 }
 
 pub fn proof_key(id: &BytesN<32>) -> (Symbol, BytesN<32>) {
     (symbol_short!("Proof"), id.clone())
 }
 
-pub fn active_issuer_count_key(env: &Env) -> (Symbol,) {
-    (Symbol::new(env, "ActiveIssuerCount"),)
-}
-
-pub fn issuer_epoch_key(env: &Env) -> (Symbol,) {
-    (Symbol::new(env, "IssuerEpoch"),)
-}
-
-pub fn max_active_issuers_key(env: &Env) -> (Symbol,) {
-    (Symbol::new(env, "MaxActiveIssuers"),)
-}
-
-pub fn reactivation_cooldown_key(env: &Env) -> (Symbol,) {
-    (Symbol::new(env, "ReactivationCooldown"),)
+#[allow(dead_code)]
+pub fn proof_ttl_key(env: &Env, id: &BytesN<32>) -> (Symbol, BytesN<32>) {
+    (Symbol::new(env, "ProofTtl"), id.clone())
 }
 
 // ---------------------------------------------------------------------------
@@ -175,7 +196,7 @@ pub fn deployment() -> Deployment {
     let issuers_id = env.register(IssuerRegistryContract, ());
     let issuers = IssuerRegistryContractClient::new(&env, &issuers_id);
     issuers.initialize(&admin);
-    issuers.register_issuer(&issuer_id, &issuer, &bytes32(&env, 2));
+    issuers.register_issuer(&issuer_id, &issuer, &bytes32(&env, 2), &bytes32(&env, 99));
 
     let proofs_id = env.register(ProofRegistryContract, ());
     let proofs = ProofRegistryContractClient::new(&env, &proofs_id);
@@ -218,28 +239,39 @@ pub fn exercised_deployment() -> Deployment {
     config.deprecate_schema_version(&2);
     config.pause();
     config.unpause();
-    config.set_admin(&rotated_admin);
+    config.nominate_admin(&rotated_admin);
+    config.accept_admin();
 
     let issuers_id = env.register(IssuerRegistryContract, ());
     let issuers = IssuerRegistryContractClient::new(&env, &issuers_id);
     issuers.initialize(&admin);
-    issuers.register_issuer(&issuer_id, &issuer, &bytes32(&env, 2));
+    issuers.register_issuer(&issuer_id, &issuer, &bytes32(&env, 2), &bytes32(&env, 99));
     issuers.update_issuer(&issuer_id, &bytes32(&env, 3));
     issuers.rotate_issuer_address(&issuer_id, &rotated_issuer);
-    issuers.register_issuer(&bytes32(&env, 10), &suspended_issuer, &bytes32(&env, 11));
-    issuers.suspend_issuer(&bytes32(&env, 10));
-    issuers.reactivate_issuer(&bytes32(&env, 10));
-    issuers.register_issuer(&bytes32(&env, 20), &revoked_issuer, &bytes32(&env, 21));
-    issuers.revoke_issuer(&bytes32(&env, 20));
-    // Suspended and left suspended, so the ReactivatableAt namespace is present
-    // for the durability-class inventory check. The reactivate path above proves
-    // the entry is removed when a suspension is lifted.
     issuers.register_issuer(
-        &bytes32(&env, 30),
-        &held_suspended_issuer,
-        &bytes32(&env, 31),
+        &bytes32(&env, 10),
+        &suspended_issuer,
+        &bytes32(&env, 11),
+        &bytes32(&env, 99),
     );
-    issuers.suspend_issuer(&bytes32(&env, 30));
+    issuers.suspend_issuer(
+        &bytes32(&env, 10),
+        &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+    );
+    issuers.reactivate_issuer(
+        &bytes32(&env, 10),
+        &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+    );
+    issuers.register_issuer(
+        &bytes32(&env, 20),
+        &revoked_issuer,
+        &bytes32(&env, 21),
+        &bytes32(&env, 99),
+    );
+    issuers.revoke_issuer(
+        &bytes32(&env, 20),
+        &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+    );
 
     let proofs_id = env.register(ProofRegistryContract, ());
     let proofs = ProofRegistryContractClient::new(&env, &proofs_id);
@@ -259,6 +291,22 @@ pub fn exercised_deployment() -> Deployment {
         &1_000_000,
     );
     proofs.revoke_proof(&bytes32(&env, 7));
+    config.pause();
+
+    config.begin_migration(&2, &1);
+    issuers.begin_migration(&2, &1);
+    proofs.begin_migration(&2, &1);
+
+    let successor = Address::generate(&env);
+    config.set_scoped_pause(&earnproof_shared::PauseScope::Upgrades, &true);
+    config.nominate_successor(&successor);
+    config.activate_successor();
+
+    issuers.nominate_successor(&successor);
+    issuers.activate_successor();
+
+    proofs.nominate_successor(&successor);
+    proofs.activate_successor();
 
     Deployment {
         env,

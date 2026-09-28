@@ -1,8 +1,8 @@
 #![no_std]
 
 use earnproof_shared::{
-    ContractError, InterfaceVersion, PROTOCOL_CONFIG_INTERFACE_VERSION, TTL_EXTEND_TO_LEDGERS,
-    TTL_THRESHOLD_LEDGERS,
+    ContractError, MigrationStatus, PauseScope, MAX_MIGRATION_BATCH, MIGRATION_STATUS_VERSION,
+    TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
 };
 use soroban_sdk::{contract, contractevent, contractimpl, contracttype, Address, BytesN, Env};
 
@@ -11,16 +11,40 @@ pub struct ProtocolConfigContract;
 
 #[contracttype]
 enum DataKey {
+    MigrationStatus,
     Admin,
     Paused,
+    ScopedPause(PauseScope),
     ConfigVersion,
     SchemaVersion(u32),
+    PendingAdmin,
     /// Allowlist entry: maps a WASM hash to the target contract version it
     /// must install.  Only hashes pre-approved by the admin may be applied.
     AllowedWasm(BytesN<32>),
     /// Monotonically-increasing contract version stored in instance storage.
     /// Prevents installing an older (or equal) version over a newer one.
     ContractVersion,
+    Successor,
+    Decommissioned,
+}
+
+// ── admin transfer events ─────────────────────────────────────────────────────────
+
+#[contractevent]
+pub struct AdminTransferNominated {
+    pub pending_admin: Address,
+    pub nominated_by: Address,
+}
+
+#[contractevent]
+pub struct AdminTransferAccepted {
+    pub new_admin: Address,
+}
+
+#[contractevent]
+pub struct AdminTransferCancelled {
+    pub pending_admin: Address,
+    pub cancelled_by: Address,
 }
 
 // ── existing events ─────────────────────────────────────────────────────────
@@ -55,6 +79,25 @@ pub struct SchemaDeprecated {
     pub version: u32,
 }
 
+#[contractevent]
+pub struct ScopedPauseChanged {
+    pub scope: PauseScope,
+    pub paused: bool,
+}
+
+#[contractevent]
+pub struct SuccessorNominated {
+    pub successor: Address,
+    pub nominated_by: Address,
+}
+
+#[contractevent]
+pub struct ContractDecommissioned {
+    pub old_instance: Address,
+    pub successor_instance: Address,
+    pub activated_by: Address,
+}
+
 // ── upgrade events ───────────────────────────────────────────────────────────
 
 /// Emitted when the admin adds a WASM hash to the upgrade allowlist.
@@ -84,6 +127,21 @@ pub struct ContractUpgraded {
 
 #[contractimpl]
 impl ProtocolConfigContract {
+    pub fn is_decommissioned(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Decommissioned)
+            .unwrap_or(false)
+    }
+
+    fn ensure_not_decommissioned(env: &Env) -> Result<(), ContractError> {
+        if Self::is_decommissioned(env.clone()) {
+            Err(ContractError::InvalidState)
+        } else {
+            Ok(())
+        }
+    }
+
     pub fn initialize(env: Env, admin: Address) -> Result<(), ContractError> {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(ContractError::AlreadyInitialized);
@@ -117,12 +175,63 @@ impl ProtocolConfigContract {
     }
 
     pub fn set_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
+    pub fn nominate_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
         let admin = Self::get_admin(env.clone())?;
         Self::require_valid_principal(&new_admin)?;
         Self::require_auth(&admin);
-        env.storage().instance().set(&DataKey::Admin, &new_admin);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        AdminTransferNominated {
+            pending_admin: new_admin.clone(),
+            nominated_by: admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn accept_admin(env: Env) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let pending_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(ContractError::NotFound)?;
+        Self::require_auth(&pending_admin);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Admin, &pending_admin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+
         Self::bump_config_version(env.clone());
-        AdminChanged { new_admin }.publish(&env);
+
+        AdminTransferAccepted {
+            new_admin: pending_admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn cancel_admin_transfer(env: Env) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+
+        let pending_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(ContractError::NotFound)?;
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+
+        AdminTransferCancelled {
+            pending_admin,
+            cancelled_by: admin,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -134,6 +243,7 @@ impl ProtocolConfigContract {
     }
 
     pub fn pause(env: Env) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
         env.storage().instance().set(&DataKey::Paused, &true);
@@ -143,6 +253,7 @@ impl ProtocolConfigContract {
     }
 
     pub fn unpause(env: Env) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
         env.storage().instance().set(&DataKey::Paused, &false);
@@ -151,7 +262,110 @@ impl ProtocolConfigContract {
         Ok(())
     }
 
+    pub fn set_scoped_pause(
+        env: Env,
+        scope: PauseScope,
+        paused: bool,
+    ) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        env.storage()
+            .persistent()
+            .set(&DataKey::ScopedPause(scope), &paused);
+        Self::bump_config_version(env.clone());
+        ScopedPauseChanged { scope, paused }.publish(&env);
+        Ok(())
+    }
+
+    pub fn is_scope_paused(env: Env, scope: PauseScope) -> bool {
+        let scoped = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ScopedPause(scope))
+            .unwrap_or(false);
+        if scoped {
+            return true;
+        }
+        if (scope == PauseScope::Global
+            || scope == PauseScope::Registration
+            || scope == PauseScope::Updates)
+            && Self::is_paused(env)
+        {
+            return true;
+        }
+        false
+    }
+
+    pub fn nominate_successor(env: Env, successor: Address) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_valid_principal(&successor)?;
+        Self::require_auth(&admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::Successor, &successor);
+        SuccessorNominated {
+            successor: successor.clone(),
+            nominated_by: admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn get_successor(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::Successor)
+    }
+
+    pub fn activate_successor(env: Env) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        let successor: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Successor)
+            .ok_or(ContractError::NotFound)?;
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Decommissioned, &true);
+        ContractDecommissioned {
+            old_instance: env.current_contract_address(),
+            successor_instance: successor,
+            activated_by: admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn keepalive_instance(env: Env) -> bool {
+        if !env.storage().instance().has(&DataKey::Admin) {
+            return false;
+        }
+        Self::extend_instance_ttl(env);
+        true
+    }
+
+    pub fn keepalive_schema_version(env: Env, version: u32) -> bool {
+        if version == 0 {
+            return false;
+        }
+        let key = DataKey::SchemaVersion(version);
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().extend_ttl(
+                &key,
+                TTL_THRESHOLD_LEDGERS,
+                TTL_EXTEND_TO_LEDGERS,
+            );
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn approve_schema_version(env: Env, version: u32) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
         Self::ensure_nonzero_version(version)?;
@@ -165,6 +379,7 @@ impl ProtocolConfigContract {
     }
 
     pub fn deprecate_schema_version(env: Env, version: u32) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
         Self::ensure_nonzero_version(version)?;
@@ -218,6 +433,12 @@ impl ProtocolConfigContract {
     /// `new_version` must be strictly greater than the currently stored
     /// contract version so that a downgrade cannot be pre-approved.
     pub fn approve_upgrade(env: Env, wasm_hash: BytesN<32>, new_version: u32) {
+        if Self::is_decommissioned(env.clone()) {
+            panic!("contract is decommissioned");
+        }
+        if Self::is_scope_paused(env.clone(), PauseScope::Upgrades) {
+            panic!("upgrades are paused");
+        }
         let admin = Self::get_admin(env.clone()).expect("contract not initialized");
 
         Self::require_auth(&admin);
@@ -243,6 +464,9 @@ impl ProtocolConfigContract {
     /// Admin-only: remove a previously allowlisted WASM hash without applying
     /// it.  Safe to call even if the hash was never allowlisted.
     pub fn revoke_upgrade(env: Env, wasm_hash: BytesN<32>) {
+        if Self::is_decommissioned(env.clone()) {
+            panic!("contract is decommissioned");
+        }
         let admin = Self::get_admin(env.clone()).expect("contract not initialized");
         Self::require_auth(&admin);
 
@@ -276,6 +500,12 @@ impl ProtocolConfigContract {
     /// the allowlist entry is consumed (removed), and a `ContractUpgraded`
     /// event is emitted.
     pub fn upgrade_contract(env: Env, wasm_hash: BytesN<32>) {
+        if Self::is_decommissioned(env.clone()) {
+            panic!("contract is decommissioned");
+        }
+        if Self::is_scope_paused(env.clone(), PauseScope::Upgrades) {
+            panic!("upgrades are paused");
+        }
         let admin = Self::get_admin(env.clone()).expect("contract not initialized");
         Self::require_auth(&admin);
 
@@ -356,6 +586,81 @@ impl ProtocolConfigContract {
             TTL_THRESHOLD_LEDGERS,
             TTL_EXTEND_TO_LEDGERS,
         );
+    }
+
+    pub fn get_migration_status(env: Env) -> Option<MigrationStatus> {
+        env.storage().instance().get(&DataKey::MigrationStatus)
+    }
+
+    pub fn begin_migration(
+        env: Env,
+        target_contract_version: u32,
+        total_items: u32,
+    ) -> Result<MigrationStatus, ContractError> {
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        if target_contract_version <= Self::get_contract_version(env.clone()) || total_items == 0 {
+            return Err(ContractError::InvalidInput);
+        }
+        if let Some(status) = Self::get_migration_status(env.clone()) {
+            return if status.target_contract_version == target_contract_version
+                && status.total_items == total_items
+            {
+                Ok(status)
+            } else {
+                Err(ContractError::InvalidState)
+            };
+        }
+        let status = MigrationStatus {
+            status_version: MIGRATION_STATUS_VERSION,
+            target_contract_version,
+            cursor: 0,
+            total_items,
+            complete: false,
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::MigrationStatus, &status);
+        Self::extend_instance_ttl(env);
+        Ok(status)
+    }
+
+    pub fn advance_migration(
+        env: Env,
+        expected_cursor: u32,
+        processed_items: u32,
+    ) -> Result<MigrationStatus, ContractError> {
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        if processed_items == 0 || processed_items > MAX_MIGRATION_BATCH {
+            return Err(ContractError::InvalidInput);
+        }
+        let mut status =
+            Self::get_migration_status(env.clone()).ok_or(ContractError::InvalidState)?;
+        if expected_cursor < status.cursor {
+            return if expected_cursor.saturating_add(processed_items) <= status.cursor {
+                Ok(status)
+            } else {
+                Err(ContractError::InvalidState)
+            };
+        }
+        if expected_cursor != status.cursor || status.complete {
+            return Err(ContractError::InvalidState);
+        }
+        let next = status
+            .cursor
+            .checked_add(processed_items)
+            .ok_or(ContractError::InvalidInput)?;
+        if next > status.total_items {
+            return Err(ContractError::InvalidInput);
+        }
+        status.cursor = next;
+        status.complete = next == status.total_items;
+        env.storage()
+            .instance()
+            .set(&DataKey::MigrationStatus, &status);
+        Self::extend_instance_ttl(env);
+        Ok(status)
     }
 
     fn require_auth(address: &Address) {
@@ -628,8 +933,7 @@ mod test {
                     &env,
                     soroban_sdk::IntoVal::into_val(&BytesN::from_array(&env, &[0xaa; 32]), &env),
                     soroban_sdk::IntoVal::into_val(&2_u32, &env),
-                ]
-                .into(),
+                ],
                 sub_invokes: &[],
             },
         }]);
@@ -865,9 +1169,8 @@ mod test {
 
         // Verify exact state written
         assert_eq!(client.get_admin(), admin, "admin must be set");
-        assert_eq!(
-            client.is_paused(),
-            false,
+        assert!(
+            !client.is_paused(),
             "protocol must not be paused after initialization"
         );
         assert_eq!(
@@ -1109,7 +1412,7 @@ mod test {
 
         // State immediately after initialization must be as documented
         assert_eq!(client.get_admin(), admin);
-        assert_eq!(client.is_paused(), false);
+        assert!(!client.is_paused());
         assert_eq!(client.get_config_version(), 1);
         assert_eq!(client.get_contract_version(), 1);
 

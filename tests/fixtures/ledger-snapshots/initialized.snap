@@ -1,7 +1,7 @@
 # scenario: initialized
-# revision: 5
-# reason: issuer-registry init now stores ActiveIssuerCount MaxActiveIssuers ReactivationCooldown and IssuerEpoch keys
-# body-digest: d10dd880dff62e0d418c2da6c61591ecc278714bb47fcda324c9f60797c0c7c6
+# revision: 6
+# reason: Update ledger snapshots for merged feature branch
+# body-digest: 2afb4dd02cefed5049b6c79f3245b3aba69fb6980a5d06b22347d271acac8f6d
 
 [ledger]
 sequence = 1000
@@ -11,9 +11,7 @@ timestamp = 1000
 issuer-registry instance [sym:ActiveIssuerCount] = u32:0
 issuer-registry instance [sym:Admin] = addr:admin
 issuer-registry instance [sym:ContractVersion] = u32:1
-issuer-registry instance [sym:IssuerEpoch] = u64:0
-issuer-registry instance [sym:MaxActiveIssuers] = u32:4294967295
-issuer-registry instance [sym:ReactivationCooldown] = u64:0
+issuer-registry instance [sym:InstanceLiveUntil] = u32:501000
 proof-registry instance [sym:Admin] = addr:admin
 proof-registry instance [sym:ContractVersion] = u32:1
 proof-registry instance [sym:IssuerRegistry] = addr:issuer-registry
