@@ -33,9 +33,13 @@ pub const MIGRATION_STATUS_VERSION: u32 = 1;
 pub const MAX_MIGRATION_BATCH: u32 = 100;
 
 /// Maximum number of proofs a single batch registration or batch revocation
-/// call may contain. Keeps a batch invocation within a single transaction's
-/// CPU/memory budget and bounds the per-item cross-contract validation work.
-pub const MAX_PROOF_BATCH_SIZE: u32 = 25;
+/// call may contain. Bounded not just by CPU/memory but by Soroban's
+/// per-invocation ledger footprint limit (100 entries in this environment):
+/// each proof touches a persistent data entry and its TTL entry, and a
+/// batch revocation touching state written by prior calls was measured to
+/// exceed that footprint limit at 25. 20 leaves comfortable headroom on
+/// both the registration and revocation paths.
+pub const MAX_PROOF_BATCH_SIZE: u32 = 20;
 
 /// Resumable progress marker shared by every contract upgrade path.
 #[contracttype]
