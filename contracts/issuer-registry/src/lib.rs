@@ -1,8 +1,8 @@
 #![no_std]
 
 use earnproof_shared::{
-    ContractError, IssuerError, IssuerRecord, IssuerStatus, MigrationStatus, TtlStatus,
-    UpgradeApproval, UpgradeReceipt, MAX_MIGRATION_BATCH, MIGRATION_STATUS_VERSION,
+    ContractError, GenesisRecord, IssuerError, IssuerRecord, IssuerStatus, MigrationStatus,
+    TtlStatus, UpgradeApproval, UpgradeReceipt, MAX_MIGRATION_BATCH, MIGRATION_STATUS_VERSION,
     TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS, UPGRADE_APPROVAL_EXPIRY_LEDGERS,
     UPGRADE_TIMELOCK_LEDGERS,
 };
@@ -30,6 +30,8 @@ enum DataKey {
     LatestUpgradeReceipt,
     /// Upgrade approval with temporal metadata (timelock and expiry).
     UpgradeApproval,
+    /// Immutable deployment identity, written once at `initialize`.
+    Genesis,
 }
 
 #[contractevent]
@@ -233,6 +235,11 @@ impl IssuerRegistryContract {
         env.storage()
             .instance()
             .set(&DataKey::ContractVersion, &1_u32);
+        let genesis = GenesisRecord {
+            genesis_id: earnproof_shared::compute_genesis_id(&env, "earnproof_issuer_registry"),
+            initialized_at_ledger: env.ledger().sequence(),
+        };
+        env.storage().instance().set(&DataKey::Genesis, &genesis);
         // Deterministic starting state for the epoch, capacity, and cooldown
         // features. Capacity defaults to unlimited so pre-existing behaviour is
         // preserved until an admin sets a real bound.
@@ -281,6 +288,13 @@ impl IssuerRegistryContract {
         Ok(())
     }
 
+    /// Returns the immutable genesis identity recorded at `initialize`.
+    /// Unchanged across upgrades and storage migrations.
+    pub fn get_genesis(env: Env) -> Result<GenesisRecord, ContractError> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Genesis)
+            .ok_or(ContractError::NotInitialized)
     pub fn nominate_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
         Self::ensure_not_decommissioned(&env).map_err(|_| ContractError::InvalidState)?;
         let admin = Self::get_admin(env.clone())?;
@@ -2535,6 +2549,66 @@ mod test {
         );
     }
 
+    // ── genesis identity (issue #192) ────────────────────────────────────────
+
+    #[test]
+    fn genesis_is_recorded_at_initialization() {
+        let (env, client, _admin) = setup();
+        let genesis = client.get_genesis();
+        assert_ne!(genesis.genesis_id, BytesN::from_array(&env, &[0u8; 32]));
+        assert_eq!(genesis.initialized_at_ledger, env.ledger().sequence());
+    }
+
+    #[test]
+    fn genesis_id_differs_across_contract_instances() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::from_str(&env, ADMIN);
+
+        let a = env.register(IssuerRegistryContract, ());
+        let a = IssuerRegistryContractClient::new(&env, &a);
+        a.initialize(&admin);
+
+        let b = env.register(IssuerRegistryContract, ());
+        let b = IssuerRegistryContractClient::new(&env, &b);
+        b.initialize(&admin);
+
+        assert_ne!(a.get_genesis().genesis_id, b.get_genesis().genesis_id);
+    }
+
+    #[test]
+    fn genesis_id_is_deterministic_for_the_same_inputs() {
+        let (env, client, _admin) = setup();
+        let recomputed = env.as_contract(&client.address, || {
+            earnproof_shared::compute_genesis_id(&env, "earnproof_issuer_registry")
+        });
+        assert_eq!(client.get_genesis().genesis_id, recomputed);
+    }
+
+    #[test]
+    fn genesis_is_stable_across_unrelated_mutations() {
+        let (env, client, _admin) = setup();
+        let genesis_before = client.get_genesis();
+
+        client.register_issuer(
+            &bytes(&env, 1),
+            &Address::from_str(&env, ISSUER_ONE),
+            &bytes(&env, 2),
+            &bytes(&env, 99),
+        );
+
+        assert_eq!(client.get_genesis(), genesis_before);
+    }
+
+    #[test]
+    fn get_genesis_fails_before_initialization() {
+        let env = Env::default();
+        let contract_id = env.register(IssuerRegistryContract, ());
+        let client = IssuerRegistryContractClient::new(&env, &contract_id);
+        use earnproof_shared::ContractError;
+
+        let result = client.try_get_genesis();
+        assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
     // ── issuer metadata URI hash commitments (issue 179) ───────────────────────
 
     #[test]
