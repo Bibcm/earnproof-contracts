@@ -3,7 +3,7 @@
 #[allow(unused_imports)]
 use earnproof_shared::{
     ContractError, MigrationStatus, PauseScope, ProofError, ProofRecord, ProofRegistrationInput,
-    ProofStatus, TtlStatus, UpgradeApproval, UpgradeReceipt, MAX_MIGRATION_BATCH,
+    ProofStatus, ProofValidity, TtlStatus, UpgradeApproval, UpgradeReceipt, MAX_MIGRATION_BATCH,
     MAX_PROOF_BATCH_SIZE, MIGRATION_STATUS_VERSION, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
 };
 use soroban_sdk::{
@@ -274,6 +274,105 @@ impl ProofRegistryContract {
             expires_at,
             created_at: now,
             revoked_at: 0,
+            activates_at: 0,
+        };
+
+        env.storage().persistent().set(&key, &record);
+        Self::extend_proof_key_ttl(env, &key);
+        Ok(())
+    }
+
+    /// Registers a proof that only becomes valid at or after `activates_at`,
+    /// rather than immediately.
+    ///
+    /// `activates_at` of `0` (or any value not after the current ledger
+    /// timestamp) behaves exactly like [`Self::register_proof`]: the proof
+    /// is active immediately. A nonzero `activates_at` in the future leaves
+    /// the proof [`ProofValidity::Pending`] — [`Self::is_valid_proof`]
+    /// returns `false` and [`Self::get_proof_validity`] reports the pending
+    /// state with its activation time — until the ledger reaches that
+    /// timestamp, at which point it becomes valid without any further call.
+    ///
+    /// `activates_at` is fixed at registration: there is no operation that
+    /// changes it afterward, so it can never be moved earlier (or later)
+    /// once set. Revoking a still-pending proof works exactly as it does for
+    /// an active one and is equally irreversible — a revoked proof never
+    /// becomes valid, whether or not it had reached its activation time.
+    ///
+    /// Every other validation and precondition is identical to
+    /// `register_proof`. Returns [`ProofError::InvalidActivationTime`] if
+    /// `activates_at` is at or after `expires_at`, since such a proof could
+    /// never be valid.
+    pub fn register_proof_with_activation(
+        env: Env,
+        proof_id_hash: BytesN<32>,
+        commitment_hash: BytesN<32>,
+        issuer_address: Address,
+        schema_version: u32,
+        expires_at: u64,
+        activates_at: u64,
+    ) -> Result<(), ProofError> {
+        Self::ensure_not_decommissioned(&env)?;
+        Self::require_valid_issuer_address(&issuer_address)?;
+        let protocol_config =
+            Self::get_protocol_config(env.clone()).map_err(|_| ProofError::ProofNotFound)?;
+        let issuer_registry =
+            Self::get_issuer_registry(env.clone()).map_err(|_| ProofError::ProofNotFound)?;
+        if issuer_address == env.current_contract_address()
+            || issuer_address == protocol_config
+            || issuer_address == issuer_registry
+        {
+            return Err(ProofError::InvalidAddress);
+        }
+        Self::require_auth(&issuer_address);
+
+        // Input validation (proof-specific data validation — checked before cross-contract calls)
+        if schema_version == 0 {
+            return Err(ProofError::InvalidSchemaVersion);
+        }
+
+        if expires_at <= env.ledger().timestamp() {
+            return Err(ProofError::ProofExpired);
+        }
+
+        if activates_at >= expires_at {
+            return Err(ProofError::InvalidActivationTime);
+        }
+
+        // Check 1: Contract paused (highest precedence — most external state)
+        let protocol_client = ProtocolConfigContractClient::new(&env, &protocol_config);
+        if protocol_client.is_paused() {
+            return Err(ProofError::ContractPaused);
+        }
+
+        // Check 2: Issuer active (issuer-specific state)
+        let issuer_client = IssuerRegistryContractClient::new(&env, &issuer_registry);
+        if !issuer_client.is_active_address(&issuer_address) {
+            return Err(ProofError::IssuerInactive);
+        }
+
+        // Check 3: Schema supported (protocol configuration state)
+        if !protocol_client.is_schema_version_approved(&schema_version) {
+            return Err(ProofError::UnsupportedSchema);
+        }
+
+        // Check 4: Uniqueness constraint (storage precondition)
+        let key = DataKey::Proof(proof_id_hash.clone());
+        if env.storage().persistent().has(&key) {
+            return Err(ProofError::ProofAlreadyRegistered);
+        }
+
+        let now = env.ledger().timestamp();
+        let record = ProofRecord {
+            proof_id_hash,
+            commitment_hash,
+            issuer_address,
+            status: ProofStatus::Active,
+            schema_version,
+            expires_at,
+            created_at: now,
+            revoked_at: 0,
+            activates_at,
         };
 
         env.storage().persistent().set(&key, &record);
@@ -371,6 +470,7 @@ impl ProofRegistryContract {
                 expires_at: entry.expires_at,
                 created_at: now,
                 revoked_at: 0,
+                activates_at: 0,
             };
 
             env.storage().persistent().set(&key, &record);
@@ -408,11 +508,33 @@ impl ProofRegistryContract {
     pub fn is_valid_proof(env: Env, proof_id_hash: BytesN<32>) -> bool {
         match Self::get_proof(env.clone(), proof_id_hash) {
             Ok(record) => {
-                record.status == ProofStatus::Active
-                    && env.ledger().timestamp() <= record.expires_at
+                Self::compute_validity(env.ledger().timestamp(), &record) == ProofValidity::Active
             }
             Err(_) => false,
         }
+    }
+
+    /// Full validity state of a proof: distinguishes pending, active,
+    /// revoked, expired, and not-found, where [`Self::is_valid_proof`]
+    /// collapses all but "active" to `false`.
+    pub fn get_proof_validity(env: Env, proof_id_hash: BytesN<32>) -> ProofValidity {
+        match Self::get_proof(env.clone(), proof_id_hash) {
+            Ok(record) => Self::compute_validity(env.ledger().timestamp(), &record),
+            Err(_) => ProofValidity::NotFound,
+        }
+    }
+
+    fn compute_validity(now: u64, record: &ProofRecord) -> ProofValidity {
+        if record.status == ProofStatus::Revoked {
+            return ProofValidity::Revoked;
+        }
+        if now < record.activates_at {
+            return ProofValidity::Pending(record.activates_at);
+        }
+        if now > record.expires_at {
+            return ProofValidity::Expired;
+        }
+        ProofValidity::Active
     }
 
     pub fn is_revoked(env: Env, proof_id_hash: BytesN<32>) -> bool {
@@ -794,10 +916,12 @@ mod test {
     extern crate std;
 
     use super::{DataKey, ProofRegistryContract, ProofRegistryContractClient};
-    use earnproof_shared::{ProofError, ProofStatus, TTL_THRESHOLD_LEDGERS};
+    use earnproof_shared::{ProofError, ProofStatus, ProofValidity, TTL_THRESHOLD_LEDGERS};
     use issuer_registry::{IssuerRegistryContract, IssuerRegistryContractClient};
     use protocol_config::{ProtocolConfigContract, ProtocolConfigContractClient};
-    use soroban_sdk::{testutils::storage::Persistent as _, Address, BytesN, Env};
+    use soroban_sdk::{
+        testutils::storage::Persistent as _, testutils::Ledger as _, Address, BytesN, Env,
+    };
 
     const ADMIN: &str = "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR";
     const ISSUER: &str = "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U";
@@ -2224,5 +2348,347 @@ mod test {
         let batch = make_batch(&env, &[1], 2_000);
         let result = client.try_register_proofs_batch(&batch, &issuer);
         assert_eq!(result, Err(Ok(ProofError::ProofNotFound)));
+    }
+
+    // ── delayed proof activation ──────────────────────────────────────────────
+
+    #[test]
+    fn register_proof_with_activation_zero_is_immediately_active() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let proof_id = bytes(&env, 1);
+
+        client.register_proof_with_activation(&proof_id, &bytes(&env, 2), &issuer, &1, &2_000, &0);
+
+        assert!(client.is_valid_proof(&proof_id));
+        assert_eq!(client.get_proof_validity(&proof_id), ProofValidity::Active);
+        assert_eq!(client.get_proof(&proof_id).activates_at, 0);
+    }
+
+    #[test]
+    fn register_proof_with_activation_in_the_past_is_immediate_migration_equivalent() {
+        // A record whose activation time is at or before "now" behaves
+        // exactly like a proof registered through the plain register_proof
+        // path (the pre-existing behavior this feature must not change).
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let now = env.ledger().timestamp();
+
+        client.register_proof_with_activation(
+            &bytes(&env, 1),
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &now,
+        );
+        client.register_proof(&bytes(&env, 3), &bytes(&env, 4), &issuer, &1, &2_000);
+
+        assert_eq!(
+            client.get_proof_validity(&bytes(&env, 1)),
+            client.get_proof_validity(&bytes(&env, 3))
+        );
+        assert!(client.is_valid_proof(&bytes(&env, 1)));
+    }
+
+    #[test]
+    fn register_proof_with_future_activation_is_pending_until_reached() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let now = env.ledger().timestamp();
+        let proof_id = bytes(&env, 1);
+
+        client.register_proof_with_activation(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &(now + 500),
+        );
+
+        // Pending proofs cannot verify as valid.
+        assert!(!client.is_valid_proof(&proof_id));
+        assert_eq!(
+            client.get_proof_validity(&proof_id),
+            ProofValidity::Pending(now + 500)
+        );
+
+        env.ledger().set_timestamp(now + 500);
+        assert!(client.is_valid_proof(&proof_id));
+        assert_eq!(client.get_proof_validity(&proof_id), ProofValidity::Active);
+    }
+
+    #[test]
+    fn activation_boundary_is_inclusive() {
+        // Exactly at activates_at, the proof is active, not pending.
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let now = env.ledger().timestamp();
+        let proof_id = bytes(&env, 1);
+
+        client.register_proof_with_activation(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &(now + 100),
+        );
+
+        env.ledger().set_timestamp(now + 99);
+        assert_eq!(
+            client.get_proof_validity(&proof_id),
+            ProofValidity::Pending(now + 100)
+        );
+
+        env.ledger().set_timestamp(now + 100);
+        assert_eq!(client.get_proof_validity(&proof_id), ProofValidity::Active);
+        assert!(client.is_valid_proof(&proof_id));
+    }
+
+    #[test]
+    fn expired_before_active_is_rejected_at_registration() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+
+        // activates_at == expires_at: can never be valid.
+        let result = client.try_register_proof_with_activation(
+            &bytes(&env, 1),
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &2_000,
+        );
+        assert_eq!(result, Err(Ok(ProofError::InvalidActivationTime)));
+
+        // activates_at > expires_at: also can never be valid.
+        let result = client.try_register_proof_with_activation(
+            &bytes(&env, 3),
+            &bytes(&env, 4),
+            &issuer,
+            &1,
+            &2_000,
+            &2_001,
+        );
+        assert_eq!(result, Err(Ok(ProofError::InvalidActivationTime)));
+
+        assert!(!client.is_valid_proof(&bytes(&env, 1)));
+        assert!(!client.is_valid_proof(&bytes(&env, 3)));
+    }
+
+    #[test]
+    fn a_pending_proof_expires_if_never_activated_before_expiry_is_checked() {
+        // A pending proof's own expires_at is still checked once activation
+        // is reached; expiry after activation is reported as Expired, not
+        // Active or Pending.
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let now = env.ledger().timestamp();
+        let proof_id = bytes(&env, 1);
+
+        client.register_proof_with_activation(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &(now + 200),
+            &(now + 100),
+        );
+
+        env.ledger().set_timestamp(now + 300);
+        assert_eq!(client.get_proof_validity(&proof_id), ProofValidity::Expired);
+        assert!(!client.is_valid_proof(&proof_id));
+    }
+
+    #[test]
+    fn revoking_a_pending_proof_is_irreversible_and_it_never_activates() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let now = env.ledger().timestamp();
+        let proof_id = bytes(&env, 1);
+
+        client.register_proof_with_activation(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &(now + 100),
+        );
+        assert_eq!(
+            client.get_proof_validity(&proof_id),
+            ProofValidity::Pending(now + 100)
+        );
+
+        client.revoke_proof(&proof_id);
+        assert_eq!(client.get_proof_validity(&proof_id), ProofValidity::Revoked);
+
+        // Advance past the activation time the proof never reached in an
+        // unrevoked state: revocation is terminal regardless.
+        env.ledger().set_timestamp(now + 100);
+        assert_eq!(client.get_proof_validity(&proof_id), ProofValidity::Revoked);
+        assert!(!client.is_valid_proof(&proof_id));
+
+        // Revoking twice is still rejected, exactly as for an active proof.
+        let result = client.try_revoke_proof(&proof_id);
+        assert_eq!(result, Err(Ok(ProofError::ProofAlreadyRevoked)));
+    }
+
+    #[test]
+    fn admin_can_revoke_a_pending_proof() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let now = env.ledger().timestamp();
+        let proof_id = bytes(&env, 1);
+
+        client.register_proof_with_activation(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &(now + 100),
+        );
+
+        client.admin_revoke_proof(&proof_id);
+        assert_eq!(client.get_proof_validity(&proof_id), ProofValidity::Revoked);
+    }
+
+    #[test]
+    fn activation_time_is_immutable_after_registration() {
+        // There is no operation that changes activates_at once set, so it
+        // can never be moved earlier (or later). This test documents that
+        // invariant by confirming the field is stable across every other
+        // operation performed on the proof.
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let now = env.ledger().timestamp();
+        let proof_id = bytes(&env, 1);
+
+        client.register_proof_with_activation(
+            &proof_id,
+            &bytes(&env, 2),
+            &issuer,
+            &1,
+            &2_000,
+            &(now + 100),
+        );
+        let recorded_activation = client.get_proof(&proof_id).activates_at;
+        assert_eq!(recorded_activation, now + 100);
+
+        // Reads, TTL keepalive, and eventually revocation must not alter it.
+        client.keepalive_proof(&proof_id);
+        assert_eq!(
+            client.get_proof(&proof_id).activates_at,
+            recorded_activation
+        );
+
+        env.ledger().set_timestamp(now + 100);
+        client.is_valid_proof(&proof_id);
+        assert_eq!(
+            client.get_proof(&proof_id).activates_at,
+            recorded_activation
+        );
+
+        client.revoke_proof(&proof_id);
+        assert_eq!(
+            client.get_proof(&proof_id).activates_at,
+            recorded_activation
+        );
+    }
+
+    #[test]
+    fn register_proof_with_activation_shares_registration_preconditions() {
+        let (env, client, protocol_config, issuer_registry, _ir_id) = setup();
+        use earnproof_shared::ProofError;
+        let issuer = Address::from_str(&env, ISSUER);
+
+        // Schema version zero.
+        let result = client.try_register_proof_with_activation(
+            &bytes(&env, 1),
+            &bytes(&env, 2),
+            &issuer,
+            &0,
+            &2_000,
+            &0,
+        );
+        assert_eq!(result, Err(Ok(ProofError::InvalidSchemaVersion)));
+
+        // Expired.
+        let now = env.ledger().timestamp();
+        let result = client.try_register_proof_with_activation(
+            &bytes(&env, 3),
+            &bytes(&env, 4),
+            &issuer,
+            &1,
+            &now,
+            &0,
+        );
+        assert_eq!(result, Err(Ok(ProofError::ProofExpired)));
+
+        // Paused.
+        protocol_config.pause();
+        let result = client.try_register_proof_with_activation(
+            &bytes(&env, 5),
+            &bytes(&env, 6),
+            &issuer,
+            &1,
+            &2_000,
+            &0,
+        );
+        assert_eq!(result, Err(Ok(ProofError::ContractPaused)));
+        protocol_config.unpause();
+
+        // Inactive issuer.
+        let inactive_issuer = Address::from_str(
+            &env,
+            "GBXHUHG5FGYLPD6RHL2MKWMP572O6KUXCZXDZJXS4T57ZTMAKBN7DWXN",
+        );
+        issuer_registry.register_issuer(
+            &bytes(&env, 10),
+            &inactive_issuer,
+            &bytes(&env, 11),
+            &bytes(&env, 99),
+        );
+        issuer_registry.suspend_issuer(&bytes(&env, 10), &bytes(&env, 1));
+        let result = client.try_register_proof_with_activation(
+            &bytes(&env, 7),
+            &bytes(&env, 8),
+            &inactive_issuer,
+            &1,
+            &2_000,
+            &0,
+        );
+        assert_eq!(result, Err(Ok(ProofError::IssuerInactive)));
+
+        // Duplicate proof id.
+        client.register_proof_with_activation(
+            &bytes(&env, 9),
+            &bytes(&env, 91),
+            &issuer,
+            &1,
+            &2_000,
+            &0,
+        );
+        let result = client.try_register_proof_with_activation(
+            &bytes(&env, 9),
+            &bytes(&env, 92),
+            &issuer,
+            &1,
+            &2_000,
+            &0,
+        );
+        assert_eq!(result, Err(Ok(ProofError::ProofAlreadyRegistered)));
+    }
+
+    #[test]
+    fn get_proof_validity_reports_not_found() {
+        let (env, client, _pc, _ir, _ir_id) = setup();
+        assert_eq!(
+            client.get_proof_validity(&bytes(&env, 99)),
+            ProofValidity::NotFound
+        );
     }
 }

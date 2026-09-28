@@ -335,6 +335,20 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
         ),
     );
 
+    // 312: InvalidActivationTime — activation at or after expiry can never
+    // be valid.
+    observed.record(
+        "proof-registry activation at or after expiry",
+        code(initial_dep.proofs.try_register_proof_with_activation(
+            &bytes32(env, 70),
+            &bytes32(env, 71),
+            &initial_dep.issuer,
+            &1,
+            &FAR_FUTURE,
+            &FAR_FUTURE,
+        )),
+    );
+
     // Every catalogued `Returned` code must appear at least once above.
     for entry in ERROR_CATALOG {
         if entry.status == Status::Returned {

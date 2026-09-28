@@ -76,6 +76,8 @@ mod tests {
     const PROOF_VALIDITY_CHECK_MEM_MAX: u64 = 100_000;
     const PROOF_REGISTER_BATCH_MAX_CPU_MAX: u64 = 5_600_000;
     const PROOF_REGISTER_BATCH_MAX_MEM_MAX: u64 = 1_750_000;
+    const PROOF_REGISTER_WITH_ACTIVATION_CPU_MAX: u64 = 800_000;
+    const PROOF_REGISTER_WITH_ACTIVATION_MEM_MAX: u64 = 250_000;
 
     // -----------------------------------------------------------------------
     // Test Utilities
@@ -554,6 +556,33 @@ mod tests {
             "proof_registry.register_proofs_batch(max_size)",
             PROOF_REGISTER_BATCH_MAX_CPU_MAX,
             PROOF_REGISTER_BATCH_MAX_MEM_MAX,
+        );
+    }
+
+    #[test]
+    fn proof_registry_register_proof_with_activation_budget() {
+        let env = Env::default();
+        let (proof_client, _protocol, _issuer_registry, issuer) = setup_proof_registry(&env);
+
+        env.cost_estimate().budget().reset_unlimited();
+
+        let proof_id = bytes(&env, 1);
+        let commitment = bytes(&env, 2);
+
+        proof_client.register_proof_with_activation(
+            &proof_id,
+            &commitment,
+            &issuer,
+            &1,
+            &2_000,
+            &500,
+        );
+
+        assert_budget(
+            &env,
+            "proof_registry.register_proof_with_activation",
+            PROOF_REGISTER_WITH_ACTIVATION_CPU_MAX,
+            PROOF_REGISTER_WITH_ACTIVATION_MEM_MAX,
         );
     }
 

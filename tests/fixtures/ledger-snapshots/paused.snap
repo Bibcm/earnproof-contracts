@@ -1,7 +1,7 @@
 # scenario: paused
-# revision: 6
-# reason: Update ledger snapshots for merged feature branch
-# body-digest: f948d5d5ae720de0f2c9ee1797bf19e33561adc106561a22ff0457be00891925
+# revision: 7
+# reason: ProofRecord gained activates_at for delayed proof activation
+# body-digest: f3bb58eec1caf93af5f06c8f98c66ae04d05d23e53116f5eec3935bde92c6622
 
 [ledger]
 sequence = 1000
@@ -13,13 +13,13 @@ issuer-registry instance [sym:ContractVersion] = u32:1
 issuer-registry instance [sym:InstanceLiveUntil] = u32:501000
 issuer-registry persistent [sym:AddressIssuer, addr:issuer] = bytes:1111111111111111111111111111111111111111111111111111111111111111
 issuer-registry persistent [sym:AddressTtl, addr:issuer] = u32:501000
-issuer-registry persistent [sym:Issuer, bytes:1111111111111111111111111111111111111111111111111111111111111111] = {sym:created_at: u64:1000, sym:issuer_address: addr:issuer, sym:issuer_id_hash: bytes:1111111111111111111111111111111111111111111111111111111111111111, sym:metadata_hash: bytes:2222222222222222222222222222222222222222222222222222222222222222, sym:provenance_commitment: bytes:6363636363636363636363636363636363636363636363636363636363636363, sym:status: [sym:Active], sym:updated_at: u64:1000}
+issuer-registry persistent [sym:Issuer, bytes:1111111111111111111111111111111111111111111111111111111111111111] = {sym:created_at: u64:1000, sym:issuer_address: addr:issuer, sym:issuer_id_hash: bytes:1111111111111111111111111111111111111111111111111111111111111111, sym:metadata_hash: bytes:2222222222222222222222222222222222222222222222222222222222222222, sym:provenance_commitment: bytes:6363636363636363636363636363636363636363636363636363636363636363, sym:reason_commitment: void, sym:status: [sym:Active], sym:updated_at: u64:1000}
 issuer-registry persistent [sym:IssuerTtl, bytes:1111111111111111111111111111111111111111111111111111111111111111] = u32:501000
 proof-registry instance [sym:Admin] = addr:admin
 proof-registry instance [sym:ContractVersion] = u32:1
 proof-registry instance [sym:IssuerRegistry] = addr:issuer-registry
 proof-registry instance [sym:ProtocolConfig] = addr:protocol-config
-proof-registry persistent [sym:Proof, bytes:3333333333333333333333333333333333333333333333333333333333333333] = {sym:commitment_hash: bytes:4444444444444444444444444444444444444444444444444444444444444444, sym:created_at: u64:1000, sym:expires_at: u64:2000, sym:issuer_address: addr:issuer, sym:proof_id_hash: bytes:3333333333333333333333333333333333333333333333333333333333333333, sym:revoked_at: u64:0, sym:schema_version: u32:1, sym:status: [sym:Active]}
+proof-registry persistent [sym:Proof, bytes:3333333333333333333333333333333333333333333333333333333333333333] = {sym:activates_at: u64:0, sym:commitment_hash: bytes:4444444444444444444444444444444444444444444444444444444444444444, sym:created_at: u64:1000, sym:expires_at: u64:2000, sym:issuer_address: addr:issuer, sym:proof_id_hash: bytes:3333333333333333333333333333333333333333333333333333333333333333, sym:revoked_at: u64:0, sym:schema_version: u32:1, sym:status: [sym:Active]}
 protocol-config instance [sym:Admin] = addr:admin
 protocol-config instance [sym:ConfigVersion] = u32:3
 protocol-config instance [sym:ContractVersion] = u32:1

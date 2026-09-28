@@ -137,6 +137,11 @@ fn declared_variants() -> std::vec::Vec<(&'static str, &'static str, u32)> {
             "InvalidBatchSize",
             ProofError::InvalidBatchSize as u32,
         ),
+        (
+            "ProofError",
+            "InvalidActivationTime",
+            ProofError::InvalidActivationTime as u32,
+        ),
     ]
 }
 

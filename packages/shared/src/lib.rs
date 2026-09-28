@@ -281,6 +281,10 @@ pub enum ProofError {
     /// `MAX_PROOF_BATCH_SIZE` entries.
     /// Recovery: split the batch into chunks of at most `MAX_PROOF_BATCH_SIZE`.
     InvalidBatchSize = 311,
+    /// `register_proof_with_activation` was given an `activates_at` at or
+    /// after `expires_at`, so the proof could never be valid.
+    /// Recovery: choose an activation time strictly before the expiration.
+    InvalidActivationTime = 312,
 }
 
 #[contracttype]
@@ -356,6 +360,34 @@ pub struct ProofRecord {
     pub expires_at: u64,
     pub created_at: u64,
     pub revoked_at: u64,
+    /// Ledger timestamp at or after which this proof is considered active.
+    /// `0` means the proof was registered without a delay and is active
+    /// immediately (subject to `status` and `expires_at` as before). This
+    /// field is fixed at registration and is never mutated afterward — there
+    /// is no operation that moves it, earlier or later.
+    pub activates_at: u64,
+}
+
+/// The full validity state of a proof, distinguishing every reason a proof
+/// might not currently verify from the single boolean `is_valid_proof`
+/// returns.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProofValidity {
+    /// `status == Active`, `activates_at` has been reached, and `expires_at`
+    /// has not.
+    Active,
+    /// Registered and not revoked, but the ledger has not yet reached
+    /// `activates_at`. Carries that timestamp (`Pending(activates_at)`) so a
+    /// caller can know when to check again.
+    Pending(u64),
+    /// `status == Revoked`. Terminal: a revoked proof never becomes valid
+    /// again, including one revoked while still pending.
+    Revoked,
+    /// Active and past its activation time, but at or after `expires_at`.
+    Expired,
+    /// No record exists for this proof id.
+    NotFound,
 }
 
 /// One entry of a bounded batch registration request.

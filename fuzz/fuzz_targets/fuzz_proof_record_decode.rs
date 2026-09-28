@@ -99,6 +99,15 @@ fuzz_target!(|data: &[u8]| {
         0
     };
 
+    // Parse activates_at (u64, bytes 93-101, big-endian)
+    let activates_at = if data.len() > 100 {
+        u64::from_be_bytes([
+            data[93], data[94], data[95], data[96], data[97], data[98], data[99], data[100],
+        ])
+    } else {
+        0
+    };
+
     // Construct the ProofRecord - this should never panic or cause undefined behavior
     let _proof = ProofRecord {
         proof_id_hash,
@@ -109,6 +118,7 @@ fuzz_target!(|data: &[u8]| {
         expires_at,
         created_at,
         revoked_at,
+        activates_at,
     };
 
     // Verify invariants (test should not reach here if invariants are violated)
