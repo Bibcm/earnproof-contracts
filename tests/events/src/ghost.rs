@@ -103,7 +103,7 @@ fn registration_while_paused_emits_no_event() {
     // The cross-contract case: proof-registry reads the pause flag from
     // protocol-config and rejects. Neither contract may publish anything.
     let deployment = Deployment::new();
-    deployment.config.pause();
+    deployment.config.pause(&hash(&deployment.env, 0x10));
     let expires = deployment.env.ledger().timestamp() + 100_000;
 
     let events = attempt_failure(&deployment, || {
@@ -144,7 +144,9 @@ fn deprecated_schema_emits_no_event() {
     // A schema withdrawn after a caller built its transaction. The rejection
     // must be as silent as any other.
     let deployment = Deployment::new();
-    deployment.config.deprecate_schema_version(&APPROVED_SCHEMA);
+    deployment
+        .config
+        .deprecate_schema_version(&hash(&deployment.env, 0x11), &APPROVED_SCHEMA);
     let expires = deployment.env.ledger().timestamp() + 100_000;
 
     let events = attempt_failure(&deployment, || {
@@ -165,7 +167,9 @@ fn zero_schema_version_emits_no_event() {
     let deployment = Deployment::new();
 
     let events = attempt_failure(&deployment, || {
-        deployment.config.approve_schema_version(&0);
+        deployment
+            .config
+            .approve_schema_version(&hash(&deployment.env, 0x12), &0);
     });
 
     assert_silent(&events, "zero schema version");
@@ -177,6 +181,7 @@ fn zero_schema_version_emits_no_event() {
 fn revoked_issuer_registration_emits_no_event() {
     let deployment = Deployment::new();
     deployment.issuers.revoke_issuer(
+        &hash(&deployment.env, 0x13),
         &deployment.issuer_id,
         &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
     );
@@ -199,6 +204,7 @@ fn revoked_issuer_registration_emits_no_event() {
 fn suspended_issuer_registration_emits_no_event() {
     let deployment = Deployment::new();
     deployment.issuers.suspend_issuer(
+        &hash(&deployment.env, 0x14),
         &deployment.issuer_id,
         &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
     );
@@ -224,12 +230,14 @@ fn reactivating_a_revoked_issuer_emits_no_event() {
     // again — the most damaging ghost event in this workspace.
     let deployment = Deployment::new();
     deployment.issuers.revoke_issuer(
+        &hash(&deployment.env, 0x15),
         &deployment.issuer_id,
         &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
     );
 
     let events = attempt_failure(&deployment, || {
         deployment.issuers.reactivate_issuer(
+            &hash(&deployment.env, 0x16),
             &deployment.issuer_id,
             &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         );
@@ -242,6 +250,7 @@ fn reactivating_a_revoked_issuer_emits_no_event() {
 fn updating_a_revoked_issuer_emits_no_event() {
     let deployment = Deployment::new();
     deployment.issuers.revoke_issuer(
+        &hash(&deployment.env, 0x17),
         &deployment.issuer_id,
         &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
     );
@@ -259,6 +268,7 @@ fn updating_a_revoked_issuer_emits_no_event() {
 fn rotating_a_revoked_issuer_address_emits_no_event() {
     let deployment = Deployment::new();
     deployment.issuers.revoke_issuer(
+        &hash(&deployment.env, 0x18),
         &deployment.issuer_id,
         &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
     );
@@ -342,6 +352,7 @@ fn suspending_an_unknown_issuer_emits_no_event() {
 
     let events = attempt_failure(&deployment, || {
         deployment.issuers.suspend_issuer(
+            &hash(&deployment.env, 0x19),
             &hash(&deployment.env, 0x7F),
             &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         );
@@ -402,6 +413,7 @@ fn a_rejected_call_changes_neither_events_nor_storage() {
     let version_before = deployment.config.get_config_version();
 
     deployment.issuers.revoke_issuer(
+        &hash(&deployment.env, 0x20),
         &deployment.issuer_id,
         &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
     );
@@ -409,6 +421,7 @@ fn a_rejected_call_changes_neither_events_nor_storage() {
 
     let events = attempt_failure(&deployment, || {
         deployment.issuers.reactivate_issuer(
+            &hash(&deployment.env, 0x21),
             &deployment.issuer_id,
             &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         );

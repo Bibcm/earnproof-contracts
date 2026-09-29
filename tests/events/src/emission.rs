@@ -64,7 +64,7 @@ fn issuer_registry_initialize_emits_no_event() {
 #[test]
 fn pause_emits_paused_once_and_matches_state() {
     let deployment = Deployment::new();
-    let events = deployment.capture(|| deployment.config.pause());
+    let events = deployment.capture(|| deployment.config.pause(&hash(&deployment.env, 0x10)));
     let event = expect_single(&deployment.env, &events, "paused");
 
     let flag: bool = event
@@ -79,8 +79,8 @@ fn pause_emits_paused_once_and_matches_state() {
 #[test]
 fn unpause_emits_unpaused_once_and_matches_state() {
     let deployment = Deployment::new();
-    deployment.config.pause();
-    let events = deployment.capture(|| deployment.config.unpause());
+    deployment.config.pause(&hash(&deployment.env, 0x10));
+    let events = deployment.capture(|| deployment.config.unpause(&hash(&deployment.env, 0x11)));
     let event = expect_single(&deployment.env, &events, "unpaused");
 
     let flag: bool = event
@@ -94,9 +94,9 @@ fn unpause_emits_unpaused_once_and_matches_state() {
 fn set_admin_emits_admin_changed_once_and_matches_state() {
     let deployment = Deployment::new();
     let successor = Address::generate(&deployment.env);
+    deployment.config.nominate_admin(&successor);
     let events = deployment.capture(|| {
-        deployment.config.nominate_admin(&successor);
-        deployment.config.accept_admin()
+        deployment.config.accept_admin();
     });
     let event = expect_single(&deployment.env, &events, "admin_transfer_accepted");
 
@@ -111,7 +111,11 @@ fn set_admin_emits_admin_changed_once_and_matches_state() {
 #[test]
 fn approve_schema_version_emits_schema_approved_once() {
     let deployment = Deployment::new();
-    let events = deployment.capture(|| deployment.config.approve_schema_version(&7));
+    let events = deployment.capture(|| {
+        deployment
+            .config
+            .approve_schema_version(&hash(&deployment.env, 0x13), &7)
+    });
     let event = expect_single(&deployment.env, &events, "schema_approved");
 
     let version: u32 = event
@@ -124,8 +128,11 @@ fn approve_schema_version_emits_schema_approved_once() {
 #[test]
 fn deprecate_schema_version_emits_schema_deprecated_once() {
     let deployment = Deployment::new();
-    let events =
-        deployment.capture(|| deployment.config.deprecate_schema_version(&APPROVED_SCHEMA));
+    let events = deployment.capture(|| {
+        deployment
+            .config
+            .deprecate_schema_version(&hash(&deployment.env, 0x14), &APPROVED_SCHEMA)
+    });
     let event = expect_single(&deployment.env, &events, "schema_deprecated");
 
     let version: u32 = event
@@ -191,6 +198,7 @@ fn suspend_issuer_emits_issuer_suspended_once_and_matches_storage() {
     let deployment = Deployment::new();
     let events = deployment.capture(|| {
         deployment.issuers.suspend_issuer(
+            &hash(&deployment.env, 0x15),
             &deployment.issuer_id,
             &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         )
@@ -208,11 +216,13 @@ fn suspend_issuer_emits_issuer_suspended_once_and_matches_storage() {
 fn reactivate_issuer_emits_issuer_reactivated_once_and_matches_storage() {
     let deployment = Deployment::new();
     deployment.issuers.suspend_issuer(
+        &hash(&deployment.env, 0x16),
         &deployment.issuer_id,
         &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
     );
     let events = deployment.capture(|| {
         deployment.issuers.reactivate_issuer(
+            &hash(&deployment.env, 0x17),
             &deployment.issuer_id,
             &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         )
@@ -231,6 +241,7 @@ fn revoke_issuer_emits_issuer_revoked_once_and_matches_storage() {
     let deployment = Deployment::new();
     let events = deployment.capture(|| {
         deployment.issuers.revoke_issuer(
+            &hash(&deployment.env, 0x18),
             &deployment.issuer_id,
             &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         )
@@ -353,7 +364,7 @@ fn admin_revoke_proof_emits_proof_revoked_with_by_admin_true() {
 #[test]
 fn a_rejected_registration_publishes_no_event_and_does_not_advance_the_epoch() {
     let deployment = Deployment::new();
-    deployment.config.pause();
+    deployment.config.pause(&hash(&deployment.env, 0x10));
     let epoch_before = deployment.proofs.get_registry_epoch();
     let expires_at = deployment.env.ledger().timestamp() + 100_000;
 
