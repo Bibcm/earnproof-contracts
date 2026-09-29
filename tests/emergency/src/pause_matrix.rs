@@ -106,13 +106,16 @@ fn matrix() -> std::vec::Vec<Case> {
             name: "protocol-config::approve_schema_version",
             expected: Available,
             setup: no_setup,
-            call: |d| settled(d.config.try_approve_schema_version(&8)),
+            call: |d| settled(d.config.try_approve_schema_version(&hash(&d.env, 0x10), &8)),
         },
         Case {
             name: "protocol-config::deprecate_schema_version",
             expected: Available,
             setup: no_setup,
-            call: |d| settled(d.config.try_deprecate_schema_version(&APPROVED_SCHEMA)),
+            call: |d| settled(
+                d.config
+                    .try_deprecate_schema_version(&hash(&d.env, 0x11), &APPROVED_SCHEMA)
+            ),
         },
         Case {
             name: "protocol-config::set_admin",
@@ -133,13 +136,13 @@ fn matrix() -> std::vec::Vec<Case> {
             name: "protocol-config::pause",
             expected: Available,
             setup: no_setup,
-            call: |d| settled(d.config.try_pause()),
+            call: |d| settled(d.config.try_pause(&hash(&d.env, 0x13))),
         },
         Case {
             name: "protocol-config::unpause",
             expected: Available,
             setup: no_setup,
-            call: |d| settled(d.config.try_unpause()),
+            call: |d| settled(d.config.try_unpause(&hash(&d.env, 0x14))),
         },
         // ---- issuer-registry: reads -------------------------------------
         Case {
@@ -206,10 +209,13 @@ fn matrix() -> std::vec::Vec<Case> {
             name: "issuer-registry::suspend_issuer",
             expected: Available,
             setup: no_setup,
-            call: |d| settled(d.issuers.try_suspend_issuer(
-                &issuer_id_hash(&d.env, 1),
-                &soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32])
-            )),
+            call: |d| {
+                settled(d.issuers.try_suspend_issuer(
+                    &hash(&d.env, 0x15),
+                    &issuer_id_hash(&d.env, 1),
+                    &soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]),
+                ))
+            },
         },
         Case {
             name: "issuer-registry::reactivate_issuer",
@@ -217,10 +223,12 @@ fn matrix() -> std::vec::Vec<Case> {
             setup: no_setup,
             call: |d| {
                 d.issuers.suspend_issuer(
+                    &hash(&d.env, 0x16),
                     &issuer_id_hash(&d.env, 1),
                     &soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]),
                 );
                 settled(d.issuers.try_reactivate_issuer(
+                    &hash(&d.env, 0x17),
                     &issuer_id_hash(&d.env, 1),
                     &soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]),
                 ))
@@ -230,10 +238,13 @@ fn matrix() -> std::vec::Vec<Case> {
             name: "issuer-registry::revoke_issuer",
             expected: Available,
             setup: no_setup,
-            call: |d| settled(d.issuers.try_revoke_issuer(
-                &issuer_id_hash(&d.env, 1),
-                &soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32])
-            )),
+            call: |d| {
+                settled(d.issuers.try_revoke_issuer(
+                    &hash(&d.env, 0x18),
+                    &issuer_id_hash(&d.env, 1),
+                    &soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]),
+                ))
+            },
         },
         Case {
             name: "issuer-registry::rotate_issuer_address",
@@ -349,7 +360,7 @@ fn every_entry_point_matches_its_documented_pause_behaviour() {
         // Fixtures are built before the pause: some of them depend on the very
         // operation the pause contains.
         (case.setup)(&deployment);
-        deployment.config.pause();
+        deployment.config.pause(&hash(&deployment.env, 0xFF));
         assert!(deployment.config.is_paused());
 
         let outcome = (case.call)(&deployment);
@@ -397,7 +408,7 @@ fn reads_return_identical_values_paused_and_unpaused() {
     let before_revoked = deployment.proofs.is_revoked(&proof_id);
     let before_record = deployment.proofs.get_proof(&proof_id);
 
-    deployment.config.pause();
+    deployment.config.pause(&hash(&deployment.env, 0x10));
 
     assert_eq!(deployment.proofs.get_admin(), before_admin);
     assert_eq!(deployment.proofs.is_valid_proof(&proof_id), before_valid);
@@ -412,8 +423,8 @@ fn containment_survives_repeated_pause_calls() {
     // Pausing an already-paused protocol must be idempotent for containment,
     // not a toggle. An operator hitting the button twice under pressure must
     // not re-open registration.
-    for _ in 0..3 {
-        deployment.config.pause();
+    for i in 0..3 {
+        deployment.config.pause(&hash(&deployment.env, 0x10 + i));
         assert!(deployment.config.is_paused());
     }
 
@@ -435,8 +446,8 @@ fn containment_survives_repeated_pause_calls() {
 #[test]
 fn unpause_restores_exactly_the_contained_operation() {
     let deployment = Deployment::new();
-    deployment.config.pause();
-    deployment.config.unpause();
+    deployment.config.pause(&hash(&deployment.env, 0x10));
+    deployment.config.unpause(&hash(&deployment.env, 0x11));
     assert!(!deployment.config.is_paused());
 
     // The single contained operation comes back; the harness call panics if not.
@@ -451,7 +462,7 @@ fn revocation_of_an_expired_proof_still_records_revocation() {
     let deployment = Deployment::new();
     let proof_id = deployment.register_proof(0x71);
 
-    deployment.config.pause();
+    deployment.config.pause(&hash(&deployment.env, 0x10));
     deployment.advance(200_000);
     assert!(!deployment.proofs.is_valid_proof(&proof_id));
 
@@ -465,7 +476,7 @@ fn double_revocation_is_rejected_without_erasing_the_first() {
     let deployment = Deployment::new();
     let proof_id = deployment.register_proof(0x81);
 
-    deployment.config.pause();
+    deployment.config.pause(&hash(&deployment.env, 0x10));
     deployment.proofs.admin_revoke_proof(&proof_id);
     let first = deployment.proofs.get_proof(&proof_id);
 

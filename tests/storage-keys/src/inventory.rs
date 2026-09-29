@@ -161,6 +161,10 @@ fn lookup_helpers_agree_with_the_inventory() {
             "IssuerTtl",
             "RotationCount",
             "RotationHistory"
+            "ExecutedProposal",
+            "Issuer",
+            "IssuerTtl",
+            "ReactivatableAt",
         ]
     );
 
@@ -172,9 +176,11 @@ fn lookup_helpers_agree_with_the_inventory() {
             "Admin",
             "ContractVersion",
             "Decommissioned",
+            "Genesis",
             "IssuerRegistry",
             "MigrationStatus",
             "ProtocolConfig",
+            "RegistryEpoch",
             "Successor"
         ]
     );
