@@ -113,6 +113,10 @@ pub fn proof_key(id: &BytesN<32>) -> (Symbol, BytesN<32>) {
     (symbol_short!("Proof"), id.clone())
 }
 
+pub fn executed_proposal_key(env: &Env, id: &BytesN<32>) -> (Symbol, BytesN<32>) {
+    (Symbol::new(env, "ExecutedProposal"), id.clone())
+}
+
 pub fn genesis_key() -> (Symbol,) {
     (symbol_short!("Genesis"),)
 }
@@ -143,6 +147,35 @@ pub fn config_history_ring_key(env: &Env, slot: u32) -> (Symbol, u32) {
 #[allow(dead_code)]
 pub fn proof_ttl_key(env: &Env, id: &BytesN<32>) -> (Symbol, BytesN<32>) {
     (Symbol::new(env, "ProofTtl"), id.clone())
+}
+
+pub fn active_issuer_count_key(env: &Env) -> (Symbol,) {
+    (Symbol::new(env, "ActiveIssuerCount"),)
+}
+
+pub fn issuer_epoch_key(env: &Env) -> (Symbol,) {
+    (Symbol::new(env, "IssuerEpoch"),)
+}
+
+pub fn max_active_issuers_key(env: &Env) -> (Symbol,) {
+    (Symbol::new(env, "MaxActiveIssuers"),)
+}
+
+pub fn reactivation_cooldown_key(env: &Env) -> (Symbol,) {
+    (Symbol::new(env, "ReactivationCooldown"),)
+}
+
+#[allow(dead_code)]
+pub fn reactivatable_at_key(env: &Env, id: &BytesN<32>) -> (Symbol, BytesN<32>) {
+    (Symbol::new(env, "ReactivatableAt"), id.clone())
+}
+
+#[allow(dead_code)]
+pub fn scoped_pause_key(
+    env: &Env,
+    scope: earnproof_shared::PauseScope,
+) -> (Symbol, earnproof_shared::PauseScope) {
+    (Symbol::new(env, "ScopedPause"), scope)
 }
 
 // ---------------------------------------------------------------------------
@@ -218,7 +251,7 @@ pub fn deployment() -> Deployment {
     let config_id = env.register(ProtocolConfigContract, ());
     let config = ProtocolConfigContractClient::new(&env, &config_id);
     config.initialize(&admin);
-    config.approve_schema_version(&1);
+    config.approve_schema_version(&bytes32(&env, 0x10), &1);
 
     let issuers_id = env.register(IssuerRegistryContract, ());
     let issuers = IssuerRegistryContractClient::new(&env, &issuers_id);
@@ -261,12 +294,12 @@ pub fn exercised_deployment() -> Deployment {
     let config_id = env.register(ProtocolConfigContract, ());
     let config = ProtocolConfigContractClient::new(&env, &config_id);
     config.initialize(&admin);
-    config.approve_schema_version(&1);
-    config.approve_schema_version(&2);
-    config.deprecate_schema_version(&2);
+    config.approve_schema_version(&bytes32(&env, 0x10), &1);
+    config.approve_schema_version(&bytes32(&env, 0x11), &2);
+    config.deprecate_schema_version(&bytes32(&env, 0x12), &2);
     config.set_schema_payload_limit(&1, &2_048);
-    config.pause();
-    config.unpause();
+    config.pause(&bytes32(&env, 0x13));
+    config.unpause(&bytes32(&env, 0x14));
     config.nominate_admin(&rotated_admin);
     config.accept_admin();
 
@@ -283,10 +316,12 @@ pub fn exercised_deployment() -> Deployment {
         &bytes32(&env, 99),
     );
     issuers.suspend_issuer(
+        &bytes32(&env, 0x16),
         &bytes32(&env, 10),
         &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
     );
     issuers.reactivate_issuer(
+        &bytes32(&env, 0x17),
         &bytes32(&env, 10),
         &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
     );
@@ -297,7 +332,19 @@ pub fn exercised_deployment() -> Deployment {
         &bytes32(&env, 99),
     );
     issuers.revoke_issuer(
+        &bytes32(&env, 0x18),
         &bytes32(&env, 20),
+        &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+    );
+    issuers.register_issuer(
+        &bytes32(&env, 30),
+        &held_suspended_issuer,
+        &bytes32(&env, 31),
+        &bytes32(&env, 99),
+    );
+    issuers.suspend_issuer(
+        &bytes32(&env, 0x19),
+        &bytes32(&env, 30),
         &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
     );
 
@@ -327,7 +374,7 @@ pub fn exercised_deployment() -> Deployment {
         &1_000_000,
         &Bytes::from_array(&env, &[0xAB; 8]),
     );
-    config.pause();
+    config.pause(&bytes32(&env, 0x19));
 
     config.begin_migration(&2, &1);
     issuers.begin_migration(&2, &1);
@@ -335,14 +382,14 @@ pub fn exercised_deployment() -> Deployment {
 
     let successor = Address::generate(&env);
     config.set_scoped_pause(&earnproof_shared::PauseScope::Upgrades, &true);
-    config.nominate_successor(&successor);
-    config.activate_successor();
+    config.nominate_successor(&bytes32(&env, 0x1A), &successor);
+    config.activate_successor(&bytes32(&env, 0x1B));
 
-    issuers.nominate_successor(&successor);
-    issuers.activate_successor();
+    issuers.nominate_successor(&bytes32(&env, 0x1C), &successor);
+    issuers.activate_successor(&bytes32(&env, 0x1D));
 
-    proofs.nominate_successor(&successor);
-    proofs.activate_successor();
+    proofs.nominate_successor(&bytes32(&env, 0x1E), &successor);
+    proofs.activate_successor(&bytes32(&env, 0x1F));
 
     Deployment {
         env,

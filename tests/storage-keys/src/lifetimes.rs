@@ -99,29 +99,27 @@ fn per_record_namespaces_hold_one_entry_per_record() {
     let deployment = exercised_deployment();
     let env = &deployment.env;
 
-    // Three issuers, each with a record and a reverse-index entry. The rotated
-    // address replaces the old index entry rather than adding to it, so the
-    // count is twelve including one TTL tracker for every record and reverse
-    // index; the rotated address and its tracker replace their old entries.
+    // Four issuers, each with a record, ttl, and reverse-index entries, plus reactivatable_at and 6 ExecutedProposal entries.
     assert_eq!(
         keys_in(env, &deployment.issuers_id, StorageClass::Persistent).len(),
-        12
+        23
     );
 
-    // Three proofs (one revoked in place, one registered with a payload) plus
-    // one payload-metadata entry for the payload-bearing registration.
+    // Three proofs (one revoked in place, one registered with a payload),
+    // one payload-metadata entry for the payload-bearing registration, plus
+    // two ExecutedProposal entries.
     assert_eq!(
         keys_in(env, &deployment.proofs_id, StorageClass::Persistent).len(),
-        4
+        6
     );
 
-    // Two schema versions, one scoped pause, one schema payload limit, and
-    // nine bounded change-history ring entries (one per governance mutation
-    // exercised below: two schema approvals, one deprecation, one payload
-    // limit, pause, unpause, set_admin, a second pause, and a scoped pause).
+    // Two schema versions, one schema payload limit, one scoped pause,
+    // nine bounded change-history ring entries (two schema approvals, one deprecation,
+    // one payload limit, pause, unpause, nominate_admin, accept_admin, and a second pause),
+    // plus eight ExecutedProposal entries.
     assert_eq!(
         keys_in(env, &deployment.config_id, StorageClass::Persistent).len(),
-        13
+        21
     );
 }
 

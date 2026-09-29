@@ -21,6 +21,7 @@ use soroban_sdk::{Address, Env, Symbol, TryFromVal, Val};
 const DECLARED_EVENTS: &[(&str, &[&str])] = &[
     // protocol-config
     ("initialized", &["admin"]),
+    ("admin_changed", &["proposal_id", "new_admin"]),
     (
         "admin_transfer_nominated",
         &["pending_admin", "nominated_by"],
@@ -30,10 +31,10 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
         "admin_transfer_cancelled",
         &["pending_admin", "cancelled_by"],
     ),
-    ("paused", &["paused"]),
-    ("unpaused", &["paused"]),
-    ("schema_approved", &["version"]),
-    ("schema_deprecated", &["version"]),
+    ("paused", &["proposal_id", "paused"]),
+    ("unpaused", &["proposal_id", "paused"]),
+    ("schema_approved", &["proposal_id", "version"]),
+    ("schema_deprecated", &["proposal_id", "version"]),
     // issuer-registry
     (
         "issuer_registered",
@@ -56,6 +57,7 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
             "metadata_uri_hash",
             "metadata_revision",
             "updated_at",
+            "epoch",
         ],
     ),
     (
@@ -64,7 +66,9 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
             "issuer_id_hash",
             "effective_ledger",
             "effective_timestamp",
+            "reason_commitment",
             "updated_at",
+            "epoch",
         ],
     ),
     (
@@ -73,7 +77,9 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
             "issuer_id_hash",
             "effective_ledger",
             "effective_timestamp",
+            "reason_commitment",
             "updated_at",
+            "epoch",
         ],
     ),
     (
@@ -82,20 +88,11 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
             "issuer_id_hash",
             "effective_ledger",
             "effective_timestamp",
+            "reason_commitment",
             "updated_at",
+            "epoch",
         ],
     ),
-        &["issuer_id_hash", "metadata_hash", "updated_at", "epoch"],
-    ),
-    (
-        "issuer_suspended",
-        &["issuer_id_hash", "updated_at", "epoch"],
-    ),
-    (
-        "issuer_reactivated",
-        &["issuer_id_hash", "updated_at", "epoch"],
-    ),
-    ("issuer_revoked", &["issuer_id_hash", "updated_at", "epoch"]),
     (
         "issuer_address_rotated",
         &[
@@ -107,19 +104,11 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
         ],
     ),
     // proof-registry
-    (
-        "proof_registered",
-        &[
-            "proof_id_hash",
-            "issuer_address",
-            "schema_version",
-            "created_ledger",
-            "created_at",
-            "expires_at",
-        ],
-    ),
-    // proof-registry
     ("proof_registered", &["proof_id_hash", "epoch"]),
+    (
+        "proof_registered_with_payload",
+        &["proof_id_hash", "payload_len", "payload_hash", "epoch"],
+    ),
     ("proof_revoked", &["proof_id_hash", "by_admin", "epoch"]),
 ];
 
@@ -181,16 +170,24 @@ fn protocol_config_events_match_their_fixtures() {
     let deployment = Deployment::new();
     let successor = Address::generate(&deployment.env);
 
-    for event in deployment.capture(|| deployment.config.pause()) {
+    for event in deployment.capture(|| deployment.config.pause(&hash(&deployment.env, 0x10))) {
         assert_matches_fixture(&deployment.env, &event);
     }
-    for event in deployment.capture(|| deployment.config.unpause()) {
+    for event in deployment.capture(|| deployment.config.unpause(&hash(&deployment.env, 0x11))) {
         assert_matches_fixture(&deployment.env, &event);
     }
-    for event in deployment.capture(|| deployment.config.approve_schema_version(&4)) {
+    for event in deployment.capture(|| {
+        deployment
+            .config
+            .approve_schema_version(&hash(&deployment.env, 0x12), &4)
+    }) {
         assert_matches_fixture(&deployment.env, &event);
     }
-    for event in deployment.capture(|| deployment.config.deprecate_schema_version(&4)) {
+    for event in deployment.capture(|| {
+        deployment
+            .config
+            .deprecate_schema_version(&hash(&deployment.env, 0x13), &4)
+    }) {
         assert_matches_fixture(&deployment.env, &event);
     }
     for event in deployment.capture(|| {
@@ -244,6 +241,7 @@ fn issuer_registry_events_match_their_fixtures() {
 
     for event in deployment.capture(|| {
         deployment.issuers.suspend_issuer(
+            &hash(&deployment.env, 0x15),
             &deployment.issuer_id,
             &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         )
@@ -253,6 +251,7 @@ fn issuer_registry_events_match_their_fixtures() {
 
     for event in deployment.capture(|| {
         deployment.issuers.reactivate_issuer(
+            &hash(&deployment.env, 0x16),
             &deployment.issuer_id,
             &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         )
@@ -270,6 +269,7 @@ fn issuer_registry_events_match_their_fixtures() {
 
     for event in deployment.capture(|| {
         deployment.issuers.revoke_issuer(
+            &hash(&deployment.env, 0x17),
             &deployment.issuer_id,
             &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         )

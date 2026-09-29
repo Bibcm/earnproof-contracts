@@ -59,7 +59,7 @@ fn deployment() -> Deployment {
     let config_id = env.register(ProtocolConfigContract, ());
     let config = ProtocolConfigContractClient::new(&env, &config_id);
     config.initialize(&admin);
-    config.approve_schema_version(&1);
+    config.approve_schema_version(&bytes32(&env, 0x10), &1);
 
     let issuers_id = env.register(IssuerRegistryContract, ());
     let issuers = IssuerRegistryContractClient::new(&env, &issuers_id);
@@ -131,7 +131,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
     );
     observed.record(
         "protocol-config pause uninitialized",
-        code(fresh_config.try_pause()),
+        code(fresh_config.try_pause(&bytes32(env, 0x10))),
     );
     observed.record(
         "protocol-config initialize twice",
@@ -139,11 +139,19 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
     );
     observed.record(
         "protocol-config approve_schema_version(0)",
-        code(initial_dep.config.try_approve_schema_version(&0)),
+        code(
+            initial_dep
+                .config
+                .try_approve_schema_version(&bytes32(env, 0x10), &0),
+        ),
     );
     observed.record(
         "protocol-config deprecate_schema_version(0)",
-        code(initial_dep.config.try_deprecate_schema_version(&0)),
+        code(
+            initial_dep
+                .config
+                .try_deprecate_schema_version(&bytes32(env, 0x10), &0),
+        ),
     );
 
     // --- issuer-registry -------------------------------------------------
@@ -198,8 +206,9 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
         &bytes32(env, 99),
     );
     initial_dep.issuers.revoke_issuer(
+        &bytes32(env, 0x10),
         &bytes32(env, 20),
-        &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::BytesN::from_array(env, &[1u8; 32]),
     );
     observed.record(
         "issuer-registry update revoked issuer",
@@ -212,8 +221,9 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
     observed.record(
         "issuer-registry reactivate revoked issuer",
         code(initial_dep.issuers.try_reactivate_issuer(
+            &bytes32(env, 0x10),
             &bytes32(env, 20),
-            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+            &soroban_sdk::BytesN::from_array(env, &[1u8; 32]),
         )),
     );
 
@@ -309,7 +319,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
     // 307: ContractPaused — pause the protocol then attempt registration.
     let deployment2 = deployment();
     let env2 = &deployment2.env;
-    deployment2.config.pause();
+    deployment2.config.pause(&bytes32(env2, 0x11));
     observed.record(
         "proof-registry contract paused",
         code(deployment2.proofs.try_register_proof(
@@ -325,6 +335,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
     let deployment3 = deployment();
     let env3 = &deployment3.env;
     deployment3.issuers.suspend_issuer(
+        &bytes32(env3, 0x11),
         &bytes32(env3, 1),
         &soroban_sdk::BytesN::from_array(env3, &[1u8; 32]),
     );
@@ -358,9 +369,14 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
     // paths above.
     let cap_id = env.register(IssuerRegistryContract, ());
     let cap = IssuerRegistryContractClient::new(env, &cap_id);
-    cap.initialize(&deployment.admin);
+    cap.initialize(&initial_dep.admin);
     let cap_issuer = Address::generate(env);
-    cap.register_issuer(&bytes32(env, 50), &cap_issuer, &bytes32(env, 51));
+    cap.register_issuer(
+        &bytes32(env, 50),
+        &cap_issuer,
+        &bytes32(env, 51),
+        &bytes32(env, 99),
+    );
 
     observed.record(
         "issuer-registry set_max below active usage",
@@ -374,21 +390,30 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
             &bytes32(env, 52),
             &Address::generate(env),
             &bytes32(env, 53),
+            &bytes32(env, 99),
         )),
     );
 
     cap.set_reactivation_cooldown(&1_000);
-    cap.suspend_issuer(&bytes32(env, 50));
+    cap.suspend_issuer(
+        &bytes32(env, 0x11),
+        &bytes32(env, 50),
+        &soroban_sdk::BytesN::from_array(env, &[1u8; 32]),
+    );
     observed.record(
         "issuer-registry reactivate before cooldown",
-        code(cap.try_reactivate_issuer(&bytes32(env, 50))),
+        code(cap.try_reactivate_issuer(
+            &bytes32(env, 0x12),
+            &bytes32(env, 50),
+            &soroban_sdk::BytesN::from_array(env, &[1u8; 32]),
+        )),
     );
 
     // --- proof-registry incompatible dependency -------------------------
     let bad_registry = env.register(BadVersionRegistry, ());
     observed.record(
         "proof-registry bind incompatible issuer registry",
-        code(deployment.proofs.try_set_issuer_registry(&bad_registry)),
+        code(initial_dep.proofs.try_set_issuer_registry(&bad_registry)),
     );
 
     // Every catalogued `Returned` code must appear at least once above.
@@ -421,7 +446,7 @@ fn a_paused_protocol_is_reported_as_contract_paused() {
     // documentation stays honest, and a future change that alters the pause
     // code has to update the catalog in the same change.
     let deployment = deployment();
-    deployment.config.pause();
+    deployment.config.pause(&bytes32(&deployment.env, 0x11));
 
     let result = deployment.proofs.try_register_proof(
         &bytes32(&deployment.env, 1),
@@ -451,6 +476,7 @@ fn a_suspended_issuer_is_reported_as_issuer_inactive() {
         &bytes32(env, 99),
     );
     deployment.issuers.suspend_issuer(
+        &bytes32(env, 0x11),
         &bytes32(env, 40),
         &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
     );

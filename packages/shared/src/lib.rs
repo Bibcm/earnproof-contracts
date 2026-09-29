@@ -364,7 +364,6 @@ pub enum IssuerError {
     IssuerInactive = 205,
     InvalidTransition = 206,
     InvalidAddress = 207,
-    InvalidMetadataCommitment = 208,
     /// Registering or reactivating this issuer would exceed the governed
     /// maximum active-issuer capacity.
     IssuerCapacityExceeded = 208,
@@ -373,6 +372,7 @@ pub enum IssuerError {
     MaxBelowActiveUsage = 209,
     /// The suspended issuer's reactivation cooldown has not yet elapsed.
     ReactivationCooldownActive = 210,
+    InvalidMetadataCommitment = 211,
 }
 
 /// Proof-specific errors (300-399).
@@ -404,6 +404,22 @@ pub enum ProofError {
     /// Distinct from unsupported schema — the input itself is invalid.
     /// Recovery: validate input against the schema before resubmitting.
     MalformedInput = 310,
+}
+
+pub fn proposal_domain_key(
+    env: &Env,
+    contract_name: soroban_sdk::Symbol,
+    proposal_id: &BytesN<32>,
+) -> BytesN<32> {
+    let network_id = env.ledger().network_id();
+    let payload = (
+        soroban_sdk::Symbol::new(env, "earnproof_proposal_v1"),
+        network_id,
+        contract_name,
+        proposal_id.clone(),
+    )
+        .to_xdr(env);
+    env.crypto().sha256(&payload).to_bytes()
 }
 
 /// Fixed capacity of the protocol-config change-history ring. Once this many
@@ -499,6 +515,8 @@ pub enum ProofValidity {
     Expired,
     IssuerInactive,
     SchemaDeprecated,
+}
+
 /// Stores temporal metadata for an upgrade approval.
 ///
 /// # Timing invariants
