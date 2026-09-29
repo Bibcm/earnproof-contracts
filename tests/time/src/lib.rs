@@ -234,7 +234,7 @@ mod tests {
                 &1,
                 &(NOW + 1),
             ),
-            Err(Ok(ProofError::UnsupportedSchema))
+            Err(Ok(ProofError::SchemaVersionNotApproved))
         );
     }
 
@@ -257,7 +257,7 @@ mod tests {
                 &2,
                 &(NOW + 1),
             ),
-            Err(Ok(ProofError::UnsupportedSchema))
+            Err(Ok(ProofError::SchemaVersionNotApproved))
         );
     }
 
@@ -282,7 +282,7 @@ mod tests {
                 &1,
                 &(NOW + 100),
             ),
-            Err(Ok(ProofError::UnsupportedSchema))
+            Err(Ok(ProofError::SchemaVersionNotApproved))
         );
     }
 

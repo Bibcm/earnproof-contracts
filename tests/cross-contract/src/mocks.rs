@@ -29,7 +29,7 @@
 // deliberately unused.
 #![allow(dead_code)]
 
-use earnproof_shared::InterfaceVersion;
+use earnproof_shared::{InterfaceVersion, PauseScope};
 use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, BytesN, Env};
 
 /// The interface version a compatible substitute reports. Every substitute
@@ -75,6 +75,10 @@ impl RejectsPauseRead {
         Err(MockError::DependencyRejected)
     }
 
+    pub fn is_scope_paused(_env: Env, _scope: PauseScope) -> Result<bool, MockError> {
+        Err(MockError::DependencyRejected)
+    }
+
     pub fn is_schema_version_approved(_env: Env, _version: u32) -> bool {
         true
     }
@@ -91,6 +95,10 @@ impl RejectsSchemaRead {
     }
 
     pub fn is_paused(_env: Env) -> bool {
+        false
+    }
+
+    pub fn is_scope_paused(_env: Env, _scope: PauseScope) -> bool {
         false
     }
 
@@ -134,6 +142,10 @@ impl MalformedPauseRead {
     }
 
     pub fn is_paused(_env: Env) -> u32 {
+        7
+    }
+
+    pub fn is_scope_paused(_env: Env, _scope: PauseScope) -> u32 {
         7
     }
 
@@ -199,6 +211,10 @@ impl ConfigWithoutSchemaRead {
     pub fn is_paused(_env: Env) -> bool {
         false
     }
+
+    pub fn is_scope_paused(_env: Env, _scope: PauseScope) -> bool {
+        false
+    }
 }
 
 /// An `issuer-registry` whose `is_active_address` takes an issuer id hash
@@ -251,6 +267,10 @@ impl ConfigRequiringAuth {
         false
     }
 
+    pub fn is_scope_paused(env: Env, _scope: PauseScope) -> bool {
+        Self::is_paused(env)
+    }
+
     pub fn is_schema_version_approved(_env: Env, _version: u32) -> bool {
         true
     }
@@ -279,6 +299,10 @@ impl RecordingConfig {
     pub fn is_paused(env: Env) -> bool {
         env.storage().persistent().set(&MockKey::Touched, &true);
         false
+    }
+
+    pub fn is_scope_paused(env: Env, _scope: PauseScope) -> bool {
+        Self::is_paused(env)
     }
 
     pub fn is_schema_version_approved(_env: Env, _version: u32) -> bool {
@@ -317,6 +341,10 @@ impl SelfPausingConfig {
             .unwrap_or(false);
         env.storage().instance().set(&MockKey::Paused, &true);
         observed
+    }
+
+    pub fn is_scope_paused(env: Env, _scope: PauseScope) -> bool {
+        Self::is_paused(env)
     }
 
     pub fn is_schema_version_approved(_env: Env, _version: u32) -> bool {

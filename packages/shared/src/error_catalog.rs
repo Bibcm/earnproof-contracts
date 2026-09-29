@@ -155,7 +155,7 @@ pub struct ErrorSpec {
 }
 
 /// Every published error, ordered by code.
-pub const ERROR_CATALOG: [ErrorSpec; 29] = [
+pub const ERROR_CATALOG: [ErrorSpec; 30] = [
     ErrorSpec {
         code: 1,
         name: "AlreadyInitialized",
@@ -385,6 +385,18 @@ pub const ERROR_CATALOG: [ErrorSpec; 29] = [
         client_message: "Reactivation cooldown has not elapsed",
     },
     ErrorSpec {
+        code: 211,
+        name: "InvalidMetadataCommitment",
+        enum_name: "IssuerError",
+        domain: Domain::IssuerRegistry,
+        status: Status::Returned,
+        cause: "set_issuer_metadata_commitment was called with an all-zero metadata_hash or metadata_uri_hash digest.",
+        retry: Retry::AfterCallerChange,
+        remediation: "Compute a valid SHA-256 commitment over non-empty metadata and URI bytes. The all-zero digest is reserved as a sentinel and rejected.",
+        http_status: 400,
+        client_message: "Invalid input digest",
+    },
+    ErrorSpec {
         code: 300,
         name: "ProofAlreadyRegistered",
         enum_name: "ProofError",
@@ -449,7 +461,7 @@ pub const ERROR_CATALOG: [ErrorSpec; 29] = [
         name: "SchemaVersionNotApproved",
         enum_name: "ProofError",
         domain: Domain::ProofRegistry,
-        status: Status::Reserved,
+        status: Status::Returned,
         cause: "The schema version is non-zero but is not approved in protocol-config, either because it was never approved or because it was deprecated.",
         retry: Retry::AfterOperatorAction,
         remediation: "A protocol operator must approve the version. A registry pointed at an uninitialized protocol config also returns UnsupportedSchema (309).",
@@ -485,8 +497,8 @@ pub const ERROR_CATALOG: [ErrorSpec; 29] = [
         name: "UnsupportedSchema",
         enum_name: "ProofError",
         domain: Domain::ProofRegistry,
-        status: Status::Returned,
-        cause: "The proof schema identifier is not supported or not registered in the protocol config.",
+        status: Status::Reserved,
+        cause: "Reserved for when proof schema identifier is not supported. Unapproved schema version is reported as 305 SchemaVersionNotApproved.",
         retry: Retry::AfterOperatorAction,
         remediation: "Call is_schema_version_approved on the protocol config contract to verify the schema version is approved. An operator must approve the schema version before it can be used for proof registration.",
         http_status: 400,

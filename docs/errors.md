@@ -98,15 +98,16 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 | 208 | `IssuerCapacityExceeded` | `IssuerError` | issuer-registry | returned | after-operator-action | 409 |
 | 209 | `MaxBelowActiveUsage` | `IssuerError` | issuer-registry | returned | after-caller-change | 400 |
 | 210 | `ReactivationCooldownActive` | `IssuerError` | issuer-registry | returned | after-caller-change | 400 |
+| 211 | `InvalidMetadataCommitment` | `IssuerError` | issuer-registry | returned | after-caller-change | 400 |
 | 300 | `ProofAlreadyRegistered` | `ProofError` | proof-registry | returned | never | 409 |
 | 301 | `ProofNotFound` | `ProofError` | proof-registry | returned | after-caller-change | 404 |
 | 302 | `ProofAlreadyRevoked` | `ProofError` | proof-registry | returned | never | 400 |
 | 303 | `ProofExpired` | `ProofError` | proof-registry | returned | after-caller-change | 400 |
 | 304 | `InvalidSchemaVersion` | `ProofError` | proof-registry | returned | after-operator-action | 400 |
-| 305 | `SchemaVersionNotApproved` | `ProofError` | proof-registry | reserved | after-operator-action | 400 |
+| 305 | `SchemaVersionNotApproved` | `ProofError` | proof-registry | returned | after-operator-action | 400 |
 | 307 | `ContractPaused` | `ProofError` | proof-registry | returned | after-operator-action | 503 |
 | 308 | `IssuerInactive` | `ProofError` | proof-registry | returned | after-operator-action | 403 |
-| 309 | `UnsupportedSchema` | `ProofError` | proof-registry | returned | after-operator-action | 400 |
+| 309 | `UnsupportedSchema` | `ProofError` | proof-registry | reserved | after-operator-action | 400 |
 | 310 | `MalformedInput` | `ProofError` | proof-registry | returned | after-caller-change | 400 |
 
 ## Details
@@ -320,6 +321,17 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 - Suggested HTTP status: 400
 - Client message: "Reactivation cooldown has not elapsed"
 
+### 211 - `InvalidMetadataCommitment`
+
+- Enum: `IssuerError`
+- Domain: issuer-registry
+- Status: returned
+- Retry: after-caller-change
+- Cause: set_issuer_metadata_commitment was called with an all-zero metadata_hash or metadata_uri_hash digest.
+- Remediation: Compute a valid SHA-256 commitment over non-empty metadata and URI bytes. The all-zero digest is reserved as a sentinel and rejected.
+- Suggested HTTP status: 400
+- Client message: "Invalid input digest"
+
 ### 300 - `ProofAlreadyRegistered`
 
 - Enum: `ProofError`
@@ -379,7 +391,7 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 
 - Enum: `ProofError`
 - Domain: proof-registry
-- Status: reserved
+- Status: returned
 - Retry: after-operator-action
 - Cause: The schema version is non-zero but is not approved in protocol-config, either because it was never approved or because it was deprecated.
 - Remediation: A protocol operator must approve the version. A registry pointed at an uninitialized protocol config also returns UnsupportedSchema (309).
@@ -412,9 +424,9 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 
 - Enum: `ProofError`
 - Domain: proof-registry
-- Status: returned
+- Status: reserved
 - Retry: after-operator-action
-- Cause: The proof schema identifier is not supported or not registered in the protocol config.
+- Cause: Reserved for when proof schema identifier is not supported. Unapproved schema version is reported as 305 SchemaVersionNotApproved.
 - Remediation: Call is_schema_version_approved on the protocol config contract to verify the schema version is approved. An operator must approve the schema version before it can be used for proof registration.
 - Suggested HTTP status: 400
 - Client message: "Schema not supported"

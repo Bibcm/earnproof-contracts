@@ -372,6 +372,7 @@ pub enum IssuerError {
     MaxBelowActiveUsage = 209,
     /// The suspended issuer's reactivation cooldown has not yet elapsed.
     ReactivationCooldownActive = 210,
+    /// An all-zero metadata hash or metadata URI hash commitment was supplied.
     InvalidMetadataCommitment = 211,
 }
 
@@ -404,22 +405,6 @@ pub enum ProofError {
     /// Distinct from unsupported schema — the input itself is invalid.
     /// Recovery: validate input against the schema before resubmitting.
     MalformedInput = 310,
-}
-
-pub fn proposal_domain_key(
-    env: &Env,
-    contract_name: soroban_sdk::Symbol,
-    proposal_id: &BytesN<32>,
-) -> BytesN<32> {
-    let network_id = env.ledger().network_id();
-    let payload = (
-        soroban_sdk::Symbol::new(env, "earnproof_proposal_v1"),
-        network_id,
-        contract_name,
-        proposal_id.clone(),
-    )
-        .to_xdr(env);
-    env.crypto().sha256(&payload).to_bytes()
 }
 
 /// Fixed capacity of the protocol-config change-history ring. Once this many
@@ -469,8 +454,10 @@ pub struct ConfigChangeSummary {
 pub enum PauseScope {
     Global,
     Registration,
+    Update,
     Updates,
     Revocation,
+    Upgrade,
     Upgrades,
 }
 
@@ -601,11 +588,34 @@ pub struct SchemaRecord {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RotationRecord {
-    pub old_address: Address,
-    pub new_address: Address,
-    pub rotated_at: u64,
+pub struct UpgradeApprovalRecord {
+    pub new_version: u32,
+    pub target_contract: Address,
+    pub contract_role: Symbol,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpgradeHistoryRecord {
+    pub old_wasm_hash: BytesN<32>,
+    pub new_wasm_hash: BytesN<32>,
+    pub old_version: u32,
+    pub new_version: u32,
     pub ledger_sequence: u32,
+    pub ledger_timestamp: u64,
+    pub upgraded_by: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ArchivedProofRecord {
+    pub proof_id_hash: BytesN<32>,
+    pub commitment_hash: BytesN<32>,
+    pub issuer_address: Address,
+    pub was_revoked: bool,
+    pub schema_version: u32,
+    pub expired_at: u64,
+    pub archived_at: u64,
 }
 
 #[contracttype]
@@ -617,6 +627,7 @@ pub struct UpgradeReceipt {
     pub upgraded_at: u64,
     pub upgraded_by: Address,
 }
+
 // ── Upgrade Approval Metadata ──────────────────────────────────────────────────
 // Metadata for an upgrade approval, exposed for off-chain verification.
 //
@@ -690,50 +701,6 @@ pub enum ApprovalQuery {
     /// Approval existed but was explicitly revoked.
     /// Included metadata shows who approved and when, for audit purposes.
     Revoked(UpgradeApprovalMetadata),
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum RevokerRole {
-    Issuer,
-    Admin,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RevocationRecord {
-    pub proof_id_hash: BytesN<32>,
-    pub revoker_role: RevokerRole,
-    pub revoker: Address,
-    pub reason_commitment: BytesN<32>,
-    pub revoked_at: u64,
-    pub ledger_sequence: u32,
-}
-
-pub const PROTOCOL_DOMAIN_TAG: &[u8] = b"EARNPROOF_V1";
-pub const MAX_PROOF_BATCH_SIZE: u32 = 50;
-
-pub fn compute_domain_separator(
-    env: &Env,
-    network_id: &BytesN<32>,
-    contract_address: &Address,
-) -> BytesN<32> {
-    let mut payload = soroban_sdk::Bytes::new(env);
-    payload.extend_from_slice(PROTOCOL_DOMAIN_TAG);
-    payload.extend_from_slice(&network_id.to_array());
-    payload.extend_from_slice(&address_bytes(contract_address));
-    env.crypto().sha256(&payload).into()
-}
-
-pub fn compute_domain_commitment(
-    env: &Env,
-    domain_separator: &BytesN<32>,
-    raw_commitment: &BytesN<32>,
-) -> BytesN<32> {
-    let mut payload = soroban_sdk::Bytes::new(env);
-    payload.extend_from_slice(&domain_separator.to_array());
-    payload.extend_from_slice(&raw_commitment.to_array());
-    env.crypto().sha256(&payload).into()
 }
 
 // ── Shared Test Utilities ──────────────────────────────────────────────────────

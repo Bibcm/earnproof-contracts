@@ -157,14 +157,13 @@ fn lookup_helpers_agree_with_the_inventory() {
         std::vec![
             "AddressIssuer",
             "AddressTtl",
-            "Issuer",
-            "IssuerTtl",
-            "RotationCount",
-            "RotationHistory"
-            "ExecutedProposal",
+            "AllowedWasm",
             "Issuer",
             "IssuerTtl",
             "ReactivatableAt",
+            "ScopedPause",
+            "UpgradeApprovalMetadata",
+            "UpgradeHistory"
         ]
     );
 
@@ -175,13 +174,21 @@ fn lookup_helpers_agree_with_the_inventory() {
         std::vec![
             "Admin",
             "ContractVersion",
+            "CurrentWasmHash",
             "Decommissioned",
             "Genesis",
+            "InstanceLiveUntil",
             "IssuerRegistry",
+            "IssuerRegistryVersion",
+            "LatestUpgradeReceipt",
             "MigrationStatus",
+            "PendingAdmin",
             "ProtocolConfig",
+            "ProtocolConfigVersion",
             "RegistryEpoch",
-            "Successor"
+            "Successor",
+            "UpgradeApproval",
+            "UpgradeHistoryCount"
         ]
     );
 

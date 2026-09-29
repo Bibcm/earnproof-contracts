@@ -1,9 +1,7 @@
 # scenario: active
-# revision: 7
-# reason: Add proof revocation reason commitments and rotation history
-# body-digest: cc9fac803f4c12b8ddb8664d4b8100539e2cbffeb4ecd429a0e0b8a746382a61
-# reason: Add proposal_id and replay protection to governed functions
-# body-digest: 431ea7fd58c04a07a72c696c5ec7dbcd8e1d10c1613b09ba7995089e8a456afe
+# revision: 10
+# reason: Storage migration, genesis, and upgrade timelock state updates
+# body-digest: a887b942b5987f6af4926f3a7e1ee5140bb0fe8cbe3e5d7316c8e571f0efdbe6
 
 [ledger]
 sequence = 1000
@@ -25,23 +23,29 @@ issuer-registry persistent [sym:IssuerTtl, bytes:1111111111111111111111111111111
 proof-registry instance [sym:Admin] = addr:admin
 proof-registry instance [sym:ContractVersion] = u32:1
 proof-registry instance [sym:Genesis] = {sym:genesis_id: bytes:87d5e19ffff41ef394bed747f4ca4dcdcbf818cec54eb466639248eb14dc82cd, sym:initialized_at_ledger: u32:1000}
+proof-registry instance [sym:InstanceLiveUntil] = u32:501000
+proof-registry instance [sym:IssuerRegistryVersion] = u32:1
 proof-registry instance [sym:IssuerRegistry] = addr:issuer-registry
+proof-registry instance [sym:ProtocolConfigVersion] = u32:1
 proof-registry instance [sym:ProtocolConfig] = addr:protocol-config
 proof-registry instance [sym:RegistryEpoch] = u32:1
 proof-registry persistent [sym:Proof, bytes:3333333333333333333333333333333333333333333333333333333333333333] = {sym:commitment_hash: bytes:4444444444444444444444444444444444444444444444444444444444444444, sym:created_at: u64:1000, sym:created_ledger: u32:1000, sym:expires_at: u64:2000, sym:issuer_address: addr:issuer, sym:proof_id_hash: bytes:3333333333333333333333333333333333333333333333333333333333333333, sym:revoked_at: u64:0, sym:schema_version: u32:1, sym:status: [sym:Active]}
+proof-registry persistent [sym:ProofTtl, bytes:3333333333333333333333333333333333333333333333333333333333333333] = u32:501000
 protocol-config instance [sym:Admin] = addr:admin
 protocol-config instance [sym:ConfigHistoryTotal] = u32:1
 protocol-config instance [sym:ConfigVersion] = u32:2
 protocol-config instance [sym:ContractVersion] = u32:1
 protocol-config instance [sym:Genesis] = {sym:genesis_id: bytes:fc884b881dd72470b277e7f17051834343fce924e5328f844966e438d3a07cd3, sym:initialized_at_ledger: u32:1000}
+protocol-config instance [sym:InstanceLiveUntil] = u32:501000
 protocol-config instance [sym:Paused] = false
 protocol-config persistent [sym:ConfigHistoryRing, u32:0] = {sym:category: [sym:SchemaApproval], sym:config_version: u32:2, sym:ledger: u32:1000, sym:proposal_commitment: bytes:8f88362ee8034de8dfd2d681d099066cada58b40ee0bbbc2321309d0b4f4d43f, sym:timestamp: u64:1000}
-protocol-config persistent [sym:ExecutedProposal, bytes:bd2559d3d43f153325b916353c0059949622b935a08085da636b9a94b2f7f9c5] = true
+protocol-config persistent [sym:SchemaRecord, u32:1] = {sym:activated_at: u64:1000, sym:deprecated_at: u64:0, sym:is_approved: true, sym:metadata_hash: bytes:0101010101010101010101010101010101010101010101010101010101010101, sym:version: u32:1}
+protocol-config persistent [sym:SchemaTtl, u32:1] = u32:501000
 protocol-config persistent [sym:SchemaVersion, u32:1] = true
 
 [events]
 protocol-config topics=[sym:initialized] data={sym:admin: addr:admin}
-protocol-config topics=[sym:schema_approved] data={sym:proposal_id: bytes:1010101010101010101010101010101010101010101010101010101010101010, sym:version: u32:1}
+protocol-config topics=[sym:schema_approved] data={sym:version: u32:1}
 issuer-registry topics=[sym:issuer_registered] data={sym:created_at: u64:1000, sym:epoch: u64:1, sym:issuer_address: addr:issuer, sym:issuer_id_hash: bytes:1111111111111111111111111111111111111111111111111111111111111111, sym:metadata_hash: bytes:2222222222222222222222222222222222222222222222222222222222222222, sym:metadata_revision: u32:1, sym:metadata_uri_hash: bytes:0000000000000000000000000000000000000000000000000000000000000000, sym:provenance_commitment: bytes:6363636363636363636363636363636363636363636363636363636363636363}
 proof-registry topics=[sym:proof_registered] data={sym:epoch: u32:1, sym:proof_id_hash: bytes:3333333333333333333333333333333333333333333333333333333333333333}
 
