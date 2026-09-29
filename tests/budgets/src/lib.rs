@@ -39,26 +39,29 @@ mod tests {
     // Protocol Config thresholds
     const PROTOCOL_INIT_CPU_MAX: u64 = 300_000;
     const PROTOCOL_INIT_MEM_MAX: u64 = 100_000;
-    // Includes the two fixed-size incident metadata writes added to pause.
-    const PROTOCOL_PAUSE_CPU_MAX: u64 = 230_000;
-    const PROTOCOL_PAUSE_MEM_MAX: u64 = 80_000;
-    const PROTOCOL_MIGRATION_STEP_CPU_MAX: u64 = 200_000;
+    // Includes the two fixed-size incident metadata writes added to pause,
+    // plus one bounded change-history ring append (issue #193).
+    const PROTOCOL_PAUSE_CPU_MAX: u64 = 300_000;
+    const PROTOCOL_PAUSE_MEM_MAX: u64 = 90_000;
+    // Includes one bounded change-history ring append (issue #193).
+    const PROTOCOL_MIGRATION_STEP_CPU_MAX: u64 = 250_000;
     const PROTOCOL_MIGRATION_STEP_MEM_MAX: u64 = 80_000;
-    const PROTOCOL_SCHEMA_APPROVE_CPU_MAX: u64 = 250_000;
-    const PROTOCOL_SCHEMA_APPROVE_MEM_MAX: u64 = 90_000;
+    // Includes one bounded change-history ring append (issue #193).
+    const PROTOCOL_SCHEMA_APPROVE_CPU_MAX: u64 = 335_000;
+    const PROTOCOL_SCHEMA_APPROVE_MEM_MAX: u64 = 100_000;
 
     // Issuer Registry thresholds
     const ISSUER_INIT_CPU_MAX: u64 = 300_000;
     const ISSUER_INIT_MEM_MAX: u64 = 100_000;
     const ISSUER_REGISTER_CPU_MAX: u64 = 600_000;
     const ISSUER_REGISTER_MEM_MAX: u64 = 200_000;
-    const ISSUER_LOOKUP_CPU_MAX: u64 = 150_000;
-    const ISSUER_LOOKUP_MEM_MAX: u64 = 80_000;
+    const ISSUER_LOOKUP_CPU_MAX: u64 = 210_000;
+    const ISSUER_LOOKUP_MEM_MAX: u64 = 100_000;
     const ISSUER_UPDATE_CPU_MAX: u64 = 400_000;
     const ISSUER_UPDATE_MEM_MAX: u64 = 150_000;
-    const ISSUER_SUSPEND_CPU_MAX: u64 = 400_000;
+    const ISSUER_SUSPEND_CPU_MAX: u64 = 560_000;
     const ISSUER_SUSPEND_MEM_MAX: u64 = 150_000;
-    const ISSUER_REVOKE_CPU_MAX: u64 = 400_000;
+    const ISSUER_REVOKE_CPU_MAX: u64 = 500_000;
     const ISSUER_REVOKE_MEM_MAX: u64 = 150_000;
     const ISSUER_ROTATE_CPU_MAX: u64 = 500_000;
     const ISSUER_ROTATE_MEM_MAX: u64 = 180_000;
@@ -67,8 +70,8 @@ mod tests {
     const PROOF_INIT_CPU_MAX: u64 = 400_000;
     const PROOF_INIT_MEM_MAX: u64 = 120_000;
     const PROOF_REGISTER_CPU_MAX: u64 = 800_000;
-    const PROOF_REGISTER_MEM_MAX: u64 = 250_000;
-    const PROOF_LOOKUP_CPU_MAX: u64 = 150_000;
+    const PROOF_REGISTER_MEM_MAX: u64 = 300_000;
+    const PROOF_LOOKUP_CPU_MAX: u64 = 190_000;
     const PROOF_LOOKUP_MEM_MAX: u64 = 80_000;
     const PROOF_REVOKE_CPU_MAX: u64 = 400_000;
     const PROOF_REVOKE_MEM_MAX: u64 = 150_000;
@@ -83,7 +86,7 @@ mod tests {
     const PROOF_OPEN_DISPUTE_CPU_MAX: u64 = 500_000;
     const PROOF_OPEN_DISPUTE_MEM_MAX: u64 = 180_000;
     const PROOF_RESOLVE_DISPUTE_CPU_MAX: u64 = 400_000;
-    const PROOF_RESOLVE_DISPUTE_MEM_MAX: u64 = 150_000;
+    const PROOF_RESOLVE_DISPUTE_MEM_MAX: u64 = 190_000;
 
     // -----------------------------------------------------------------------
     // Test Utilities

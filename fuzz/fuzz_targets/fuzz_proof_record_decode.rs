@@ -99,10 +99,17 @@ fuzz_target!(|data: &[u8]| {
         0
     };
 
-    // Parse activates_at (u64, bytes 93-101, big-endian)
-    let activates_at = if data.len() > 100 {
+    // Parse created_ledger (u32, bytes 93-97, big-endian) when available.
+    let created_ledger = if data.len() > 96 {
+        u32::from_be_bytes([data[93], data[94], data[95], data[96]])
+    } else {
+        1
+    };
+
+    // Parse activates_at (u64, bytes 97-105, big-endian)
+    let activates_at = if data.len() > 104 {
         u64::from_be_bytes([
-            data[93], data[94], data[95], data[96], data[97], data[98], data[99], data[100],
+            data[97], data[98], data[99], data[100], data[101], data[102], data[103], data[104],
         ])
     } else {
         0
@@ -118,6 +125,7 @@ fuzz_target!(|data: &[u8]| {
         expires_at,
         created_at,
         revoked_at,
+        created_ledger,
         activates_at,
     };
 

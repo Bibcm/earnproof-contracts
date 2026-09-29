@@ -165,9 +165,12 @@ fn lookup_helpers_agree_with_the_inventory() {
             "Admin",
             "ContractVersion",
             "Decommissioned",
+            "Genesis",
+            "InstanceLiveUntil",
             "IssuerRegistry",
             "MigrationStatus",
             "ProtocolConfig",
+            "RegistryEpoch",
             "Successor"
         ]
     );
