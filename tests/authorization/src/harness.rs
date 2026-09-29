@@ -214,27 +214,36 @@ impl Deployment<'_> {
     /// rotation scenarios need. Each method installs the auth entry for the
     /// signer the contract is documented to demand.
     pub fn set_admin(&self, new_admin: &Address) {
-        let proposal_id = proposal_id_hash(&self.env, 0xFD);
         authorize(
             &self.env,
             &self.admin,
             &self.config_address,
-            "set_admin",
-            (&proposal_id, new_admin).into_val(&self.env),
+            "nominate_admin",
+            (new_admin,).into_val(&self.env),
         );
-        self.config.set_admin(&proposal_id, new_admin);
+        self.config.nominate_admin(new_admin);
+        authorize(
+            &self.env,
+            new_admin,
+            &self.config_address,
+            "accept_admin",
+            ().into_val(&self.env),
+        );
+        self.config.accept_admin();
     }
 
     pub fn suspend_issuer(&self, issuer_id: &BytesN<32>) {
         let proposal_id = proposal_id_hash(&self.env, 0xFC);
+        let reason_commitment = soroban_sdk::BytesN::from_array(&self.env, &[1u8; 32]);
         authorize(
             &self.env,
             &self.admin,
             &self.issuers_address,
             "suspend_issuer",
-            (&proposal_id, issuer_id).into_val(&self.env),
+            (&proposal_id, issuer_id, &reason_commitment).into_val(&self.env),
         );
-        self.issuers.suspend_issuer(&proposal_id, issuer_id);
+        self.issuers
+            .suspend_issuer(&proposal_id, issuer_id, &reason_commitment);
     }
 
     pub fn rotate_issuer_address(&self, issuer_id: &BytesN<32>, new_address: &Address) {

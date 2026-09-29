@@ -306,16 +306,17 @@ fn rotating_the_config_admin_does_not_move_registry_authority() {
 
     // The new config admin must not inherit issuer-registry authority...
     let p = hash(&deployment.env, 0x18);
+    let reason = soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]);
     authorize(
         &deployment.env,
         &config_admin,
         &deployment.issuers_address,
         "suspend_issuer",
-        (&p, &deployment.issuer_id).into_val(&deployment.env),
+        (&p, &deployment.issuer_id, &reason).into_val(&deployment.env),
     );
     assert!(deployment
         .issuers
-        .try_suspend_issuer(&p, &deployment.issuer_id)
+        .try_suspend_issuer(&p, &deployment.issuer_id, &reason)
         .is_err());
     deployment.assert_no_side_effects(&before, "config admin on suspend_issuer");
 

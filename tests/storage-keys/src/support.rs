@@ -117,9 +117,65 @@ pub fn executed_proposal_key(env: &Env, id: &BytesN<32>) -> (Symbol, BytesN<32>)
     (Symbol::new(env, "ExecutedProposal"), id.clone())
 }
 
+pub fn genesis_key() -> (Symbol,) {
+    (symbol_short!("Genesis"),)
+}
+
+pub fn registry_epoch_key(env: &Env) -> (Symbol,) {
+    (Symbol::new(env, "RegistryEpoch"),)
+}
+
+#[allow(dead_code)]
+pub fn proof_payload_meta_key(env: &Env, id: &BytesN<32>) -> (Symbol, BytesN<32>) {
+    (Symbol::new(env, "ProofPayloadMeta"), id.clone())
+}
+
+#[allow(dead_code)]
+pub fn schema_payload_limit_key(env: &Env, version: u32) -> (Symbol, u32) {
+    (Symbol::new(env, "SchemaPayloadLimit"), version)
+}
+
+pub fn config_history_total_key(env: &Env) -> (Symbol,) {
+    (Symbol::new(env, "ConfigHistoryTotal"),)
+}
+
+#[allow(dead_code)]
+pub fn config_history_ring_key(env: &Env, slot: u32) -> (Symbol, u32) {
+    (Symbol::new(env, "ConfigHistoryRing"), slot)
+}
+
 #[allow(dead_code)]
 pub fn proof_ttl_key(env: &Env, id: &BytesN<32>) -> (Symbol, BytesN<32>) {
     (Symbol::new(env, "ProofTtl"), id.clone())
+}
+
+pub fn active_issuer_count_key(env: &Env) -> (Symbol,) {
+    (Symbol::new(env, "ActiveIssuerCount"),)
+}
+
+pub fn issuer_epoch_key(env: &Env) -> (Symbol,) {
+    (Symbol::new(env, "IssuerEpoch"),)
+}
+
+pub fn max_active_issuers_key(env: &Env) -> (Symbol,) {
+    (Symbol::new(env, "MaxActiveIssuers"),)
+}
+
+pub fn reactivation_cooldown_key(env: &Env) -> (Symbol,) {
+    (Symbol::new(env, "ReactivationCooldown"),)
+}
+
+#[allow(dead_code)]
+pub fn reactivatable_at_key(env: &Env, id: &BytesN<32>) -> (Symbol, BytesN<32>) {
+    (Symbol::new(env, "ReactivatableAt"), id.clone())
+}
+
+#[allow(dead_code)]
+pub fn scoped_pause_key(
+    env: &Env,
+    scope: earnproof_shared::PauseScope,
+) -> (Symbol, earnproof_shared::PauseScope) {
+    (Symbol::new(env, "ScopedPause"), scope)
 }
 
 // ---------------------------------------------------------------------------
@@ -231,6 +287,7 @@ pub fn exercised_deployment() -> Deployment {
     let rotated_issuer = Address::generate(&env);
     let suspended_issuer = Address::generate(&env);
     let revoked_issuer = Address::generate(&env);
+    let held_suspended_issuer = Address::generate(&env);
     let issuer_id = bytes32(&env, 1);
     let proof_id = bytes32(&env, 5);
 
@@ -240,9 +297,11 @@ pub fn exercised_deployment() -> Deployment {
     config.approve_schema_version(&bytes32(&env, 0x10), &1);
     config.approve_schema_version(&bytes32(&env, 0x11), &2);
     config.deprecate_schema_version(&bytes32(&env, 0x12), &2);
+    config.set_schema_payload_limit(&1, &2_048);
     config.pause(&bytes32(&env, 0x13));
     config.unpause(&bytes32(&env, 0x14));
-    config.set_admin(&bytes32(&env, 0x15), &rotated_admin);
+    config.nominate_admin(&rotated_admin);
+    config.accept_admin();
 
     let issuers_id = env.register(IssuerRegistryContract, ());
     let issuers = IssuerRegistryContractClient::new(&env, &issuers_id);
@@ -256,15 +315,38 @@ pub fn exercised_deployment() -> Deployment {
         &bytes32(&env, 11),
         &bytes32(&env, 99),
     );
-    issuers.suspend_issuer(&bytes32(&env, 0x16), &bytes32(&env, 10));
-    issuers.reactivate_issuer(&bytes32(&env, 0x17), &bytes32(&env, 10));
+    issuers.suspend_issuer(
+        &bytes32(&env, 0x16),
+        &bytes32(&env, 10),
+        &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+    );
+    issuers.reactivate_issuer(
+        &bytes32(&env, 0x17),
+        &bytes32(&env, 10),
+        &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+    );
     issuers.register_issuer(
         &bytes32(&env, 20),
         &revoked_issuer,
         &bytes32(&env, 21),
         &bytes32(&env, 99),
     );
-    issuers.revoke_issuer(&bytes32(&env, 0x18), &bytes32(&env, 20));
+    issuers.revoke_issuer(
+        &bytes32(&env, 0x18),
+        &bytes32(&env, 20),
+        &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+    );
+    issuers.register_issuer(
+        &bytes32(&env, 30),
+        &held_suspended_issuer,
+        &bytes32(&env, 31),
+        &bytes32(&env, 99),
+    );
+    issuers.suspend_issuer(
+        &bytes32(&env, 0x19),
+        &bytes32(&env, 30),
+        &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+    );
 
     let proofs_id = env.register(ProofRegistryContract, ());
     let proofs = ProofRegistryContractClient::new(&env, &proofs_id);
@@ -284,6 +366,14 @@ pub fn exercised_deployment() -> Deployment {
         &1_000_000,
     );
     proofs.revoke_proof(&bytes32(&env, 7));
+    proofs.register_proof_with_payload(
+        &bytes32(&env, 9),
+        &bytes32(&env, 10),
+        &rotated_issuer,
+        &1,
+        &1_000_000,
+        &Bytes::from_array(&env, &[0xAB; 8]),
+    );
     config.pause(&bytes32(&env, 0x19));
 
     config.begin_migration(&2, &1);
@@ -291,6 +381,7 @@ pub fn exercised_deployment() -> Deployment {
     proofs.begin_migration(&2, &1);
 
     let successor = Address::generate(&env);
+    config.set_scoped_pause(&earnproof_shared::PauseScope::Upgrades, &true);
     config.nominate_successor(&bytes32(&env, 0x1A), &successor);
     config.activate_successor(&bytes32(&env, 0x1B));
 

@@ -94,16 +94,15 @@ fn unpause_emits_unpaused_once_and_matches_state() {
 fn set_admin_emits_admin_changed_once_and_matches_state() {
     let deployment = Deployment::new();
     let successor = Address::generate(&deployment.env);
+    deployment.config.nominate_admin(&successor);
     let events = deployment.capture(|| {
-        deployment
-            .config
-            .set_admin(&hash(&deployment.env, 0x12), &successor)
+        deployment.config.accept_admin();
     });
-    let event = expect_single(&deployment.env, &events, "admin_changed");
+    let event = expect_single(&deployment.env, &events, "admin_transfer_accepted");
 
     let announced: Address = event
         .field(&deployment.env, "new_admin")
-        .expect("admin_changed event must carry a new_admin field");
+        .expect("admin_transfer_accepted event must carry a new_admin field");
 
     assert_eq!(announced, successor);
     assert_eq!(announced, deployment.config.get_admin());
@@ -198,9 +197,11 @@ fn update_issuer_emits_issuer_metadata_updated_once_and_matches_storage() {
 fn suspend_issuer_emits_issuer_suspended_once_and_matches_storage() {
     let deployment = Deployment::new();
     let events = deployment.capture(|| {
-        deployment
-            .issuers
-            .suspend_issuer(&hash(&deployment.env, 0x15), &deployment.issuer_id)
+        deployment.issuers.suspend_issuer(
+            &hash(&deployment.env, 0x15),
+            &deployment.issuer_id,
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+        )
     });
     let event = expect_single(&deployment.env, &events, "issuer_suspended");
 
@@ -214,13 +215,17 @@ fn suspend_issuer_emits_issuer_suspended_once_and_matches_storage() {
 #[test]
 fn reactivate_issuer_emits_issuer_reactivated_once_and_matches_storage() {
     let deployment = Deployment::new();
-    deployment
-        .issuers
-        .suspend_issuer(&hash(&deployment.env, 0x16), &deployment.issuer_id);
+    deployment.issuers.suspend_issuer(
+        &hash(&deployment.env, 0x16),
+        &deployment.issuer_id,
+        &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+    );
     let events = deployment.capture(|| {
-        deployment
-            .issuers
-            .reactivate_issuer(&hash(&deployment.env, 0x17), &deployment.issuer_id)
+        deployment.issuers.reactivate_issuer(
+            &hash(&deployment.env, 0x17),
+            &deployment.issuer_id,
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+        )
     });
     let event = expect_single(&deployment.env, &events, "issuer_reactivated");
 
@@ -235,9 +240,11 @@ fn reactivate_issuer_emits_issuer_reactivated_once_and_matches_storage() {
 fn revoke_issuer_emits_issuer_revoked_once_and_matches_storage() {
     let deployment = Deployment::new();
     let events = deployment.capture(|| {
-        deployment
-            .issuers
-            .revoke_issuer(&hash(&deployment.env, 0x18), &deployment.issuer_id)
+        deployment.issuers.revoke_issuer(
+            &hash(&deployment.env, 0x18),
+            &deployment.issuer_id,
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+        )
     });
     let event = expect_single(&deployment.env, &events, "issuer_revoked");
 
@@ -274,28 +281,107 @@ fn rotate_issuer_address_emits_both_old_and_new_address() {
 }
 
 // ─── proof-registry ─────────────────────────────────────────────────────────
+//
+// proof-registry used to emit nothing (tracked as the known gap in
+// docs/events.md and issue #3). Exposing the registry epoch through typed
+// events, as required by issue #187, closes that gap for register_proof and
+// revoke_proof/admin_revoke_proof: each now publishes exactly one event
+// carrying the epoch it advanced to, matching the "at most one event per
+// invocation" rule the rest of this workspace follows.
 
 #[test]
-fn proof_registry_emits_no_events_as_documented() {
-    // `tests/fixtures/events/proof-registry/v1/events.json` records that this
-    // contract publishes nothing. That is the "unless explicitly documented
-    // otherwise" case, and it is asserted rather than assumed: an indexer that
-    // waited for a ProofRegistered event would wait forever, and this test is
-    // what makes that a deliberate, visible decision.
+fn register_proof_emits_proof_registered_with_the_advanced_epoch() {
     let deployment = Deployment::new();
+    let epoch_before = deployment.proofs.get_registry_epoch();
+    let proof_id = hash(&deployment.env, 0x11);
+    let expires_at = deployment.env.ledger().timestamp() + 100_000;
+
     let events = deployment.capture(|| {
-        let proof_id = deployment.register_proof(0x11);
+        deployment.proofs.register_proof(
+            &proof_id,
+            &hash(&deployment.env, 0xEE),
+            &deployment.issuer,
+            &APPROVED_SCHEMA,
+            &expires_at,
+        );
+    });
+
+    let event = expect_single(&deployment.env, &events, "proof_registered");
+    let announced_id: BytesN<32> = event
+        .field(&deployment.env, "proof_id_hash")
+        .expect("proof_registered event must carry proof_id_hash");
+    let announced_epoch: u32 = event
+        .field(&deployment.env, "epoch")
+        .expect("proof_registered event must carry epoch");
+
+    assert_eq!(announced_id, proof_id);
+    assert_eq!(announced_epoch, epoch_before + 1);
+    assert_eq!(deployment.proofs.get_registry_epoch(), epoch_before + 1);
+}
+
+#[test]
+fn revoke_proof_emits_proof_revoked_with_the_advanced_epoch() {
+    let deployment = Deployment::new();
+    let proof_id = deployment.register_proof(0x21);
+    let epoch_before = deployment.proofs.get_registry_epoch();
+
+    let events = deployment.capture(|| {
+        deployment.proofs.revoke_proof(&proof_id);
+    });
+
+    let event = expect_single(&deployment.env, &events, "proof_revoked");
+    let announced_id: BytesN<32> = event
+        .field(&deployment.env, "proof_id_hash")
+        .expect("proof_revoked event must carry proof_id_hash");
+    let by_admin: bool = event
+        .field(&deployment.env, "by_admin")
+        .expect("proof_revoked event must carry by_admin");
+    let announced_epoch: u32 = event
+        .field(&deployment.env, "epoch")
+        .expect("proof_revoked event must carry epoch");
+
+    assert_eq!(announced_id, proof_id);
+    assert!(!by_admin);
+    assert_eq!(announced_epoch, epoch_before + 1);
+}
+
+#[test]
+fn admin_revoke_proof_emits_proof_revoked_with_by_admin_true() {
+    let deployment = Deployment::new();
+    let proof_id = deployment.register_proof(0x22);
+
+    let events = deployment.capture(|| {
         deployment.proofs.admin_revoke_proof(&proof_id);
     });
-    let from_proof_registry: std::vec::Vec<_> = events
-        .iter()
-        .filter(|event| event.contract == deployment.proofs.address)
-        .collect();
 
-    assert!(
-        from_proof_registry.is_empty(),
-        "proof-registry is documented as emitting no events; \
-         adding one requires updating tests/fixtures/events/proof-registry/ \
-         and docs/events.md"
+    let event = expect_single(&deployment.env, &events, "proof_revoked");
+    let by_admin: bool = event
+        .field(&deployment.env, "by_admin")
+        .expect("proof_revoked event must carry by_admin");
+    assert!(by_admin);
+}
+
+#[test]
+fn a_rejected_registration_publishes_no_event_and_does_not_advance_the_epoch() {
+    let deployment = Deployment::new();
+    deployment.config.pause(&hash(&deployment.env, 0x10));
+    let epoch_before = deployment.proofs.get_registry_epoch();
+    let expires_at = deployment.env.ledger().timestamp() + 100_000;
+
+    let events = deployment.capture(|| {
+        let _ = deployment.proofs.try_register_proof(
+            &hash(&deployment.env, 0x31),
+            &hash(&deployment.env, 0x32),
+            &deployment.issuer,
+            &APPROVED_SCHEMA,
+            &expires_at,
+        );
+    });
+
+    assert!(events.is_empty(), "a rejected call must publish nothing");
+    assert_eq!(
+        deployment.proofs.get_registry_epoch(),
+        epoch_before,
+        "a rejected call must not advance the registry epoch"
     );
 }

@@ -39,27 +39,30 @@ mod tests {
     // Protocol Config thresholds
     const PROTOCOL_INIT_CPU_MAX: u64 = 300_000;
     const PROTOCOL_INIT_MEM_MAX: u64 = 100_000;
-    // Includes the two fixed-size incident metadata writes added to pause.
-    const PROTOCOL_PAUSE_CPU_MAX: u64 = 230_000;
-    const PROTOCOL_PAUSE_MEM_MAX: u64 = 80_000;
-    const PROTOCOL_MIGRATION_STEP_CPU_MAX: u64 = 200_000;
+    // Includes the two fixed-size incident metadata writes added to pause,
+    // plus one bounded change-history ring append (issue #193) and proposal replay protection.
+    const PROTOCOL_PAUSE_CPU_MAX: u64 = 400_000;
+    const PROTOCOL_PAUSE_MEM_MAX: u64 = 120_000;
+    // Includes one bounded change-history ring append (issue #193).
+    const PROTOCOL_MIGRATION_STEP_CPU_MAX: u64 = 250_000;
     const PROTOCOL_MIGRATION_STEP_MEM_MAX: u64 = 80_000;
-    const PROTOCOL_SCHEMA_APPROVE_CPU_MAX: u64 = 250_000;
-    const PROTOCOL_SCHEMA_APPROVE_MEM_MAX: u64 = 90_000;
+    // Includes one bounded change-history ring append (issue #193) and proposal replay protection.
+    const PROTOCOL_SCHEMA_APPROVE_CPU_MAX: u64 = 450_000;
+    const PROTOCOL_SCHEMA_APPROVE_MEM_MAX: u64 = 140_000;
 
     // Issuer Registry thresholds
     const ISSUER_INIT_CPU_MAX: u64 = 300_000;
     const ISSUER_INIT_MEM_MAX: u64 = 100_000;
     const ISSUER_REGISTER_CPU_MAX: u64 = 600_000;
     const ISSUER_REGISTER_MEM_MAX: u64 = 200_000;
-    const ISSUER_LOOKUP_CPU_MAX: u64 = 150_000;
-    const ISSUER_LOOKUP_MEM_MAX: u64 = 80_000;
+    const ISSUER_LOOKUP_CPU_MAX: u64 = 220_000;
+    const ISSUER_LOOKUP_MEM_MAX: u64 = 100_000;
     const ISSUER_UPDATE_CPU_MAX: u64 = 400_000;
     const ISSUER_UPDATE_MEM_MAX: u64 = 150_000;
-    const ISSUER_SUSPEND_CPU_MAX: u64 = 400_000;
-    const ISSUER_SUSPEND_MEM_MAX: u64 = 150_000;
-    const ISSUER_REVOKE_CPU_MAX: u64 = 400_000;
-    const ISSUER_REVOKE_MEM_MAX: u64 = 150_000;
+    const ISSUER_SUSPEND_CPU_MAX: u64 = 650_000;
+    const ISSUER_SUSPEND_MEM_MAX: u64 = 200_000;
+    const ISSUER_REVOKE_CPU_MAX: u64 = 600_000;
+    const ISSUER_REVOKE_MEM_MAX: u64 = 180_000;
     const ISSUER_ROTATE_CPU_MAX: u64 = 500_000;
     const ISSUER_ROTATE_MEM_MAX: u64 = 180_000;
 
@@ -319,7 +322,11 @@ mod tests {
         client.register_issuer(&issuer_id, &issuer_address, &metadata_hash, &metadata_hash);
         env.cost_estimate().budget().reset_unlimited();
 
-        client.suspend_issuer(&bytes(&env, 0x10), &issuer_id);
+        client.suspend_issuer(
+            &bytes(&env, 0x10),
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
 
         assert_budget(
             &env,
@@ -344,7 +351,11 @@ mod tests {
         client.register_issuer(&issuer_id, &issuer_address, &metadata_hash, &metadata_hash);
         env.cost_estimate().budget().reset_unlimited();
 
-        client.revoke_issuer(&bytes(&env, 0x10), &issuer_id);
+        client.revoke_issuer(
+            &bytes(&env, 0x10),
+            &issuer_id,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
 
         assert_budget(
             &env,

@@ -123,7 +123,13 @@ fn matrix() -> std::vec::Vec<Case> {
             setup: no_setup,
             call: |d| {
                 let next = Address::generate(&d.env);
-                settled(d.config.try_set_admin(&hash(&d.env, 0x12), &next))
+                {
+                    let res = d.config.try_nominate_admin(&next);
+                    if res.is_ok() {
+                        let _ = d.config.try_accept_admin();
+                    }
+                    settled(res)
+                }
             },
         },
         Case {
@@ -203,32 +209,42 @@ fn matrix() -> std::vec::Vec<Case> {
             name: "issuer-registry::suspend_issuer",
             expected: Available,
             setup: no_setup,
-            call: |d| settled(
-                d.issuers
-                    .try_suspend_issuer(&hash(&d.env, 0x15), &issuer_id_hash(&d.env, 1))
-            ),
+            call: |d| {
+                settled(d.issuers.try_suspend_issuer(
+                    &hash(&d.env, 0x15),
+                    &issuer_id_hash(&d.env, 1),
+                    &soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]),
+                ))
+            },
         },
         Case {
             name: "issuer-registry::reactivate_issuer",
             expected: Available,
             setup: no_setup,
             call: |d| {
-                d.issuers
-                    .suspend_issuer(&hash(&d.env, 0x16), &issuer_id_hash(&d.env, 1));
-                settled(
-                    d.issuers
-                        .try_reactivate_issuer(&hash(&d.env, 0x17), &issuer_id_hash(&d.env, 1)),
-                )
+                d.issuers.suspend_issuer(
+                    &hash(&d.env, 0x16),
+                    &issuer_id_hash(&d.env, 1),
+                    &soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]),
+                );
+                settled(d.issuers.try_reactivate_issuer(
+                    &hash(&d.env, 0x17),
+                    &issuer_id_hash(&d.env, 1),
+                    &soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]),
+                ))
             },
         },
         Case {
             name: "issuer-registry::revoke_issuer",
             expected: Available,
             setup: no_setup,
-            call: |d| settled(
-                d.issuers
-                    .try_revoke_issuer(&hash(&d.env, 0x18), &issuer_id_hash(&d.env, 1))
-            ),
+            call: |d| {
+                settled(d.issuers.try_revoke_issuer(
+                    &hash(&d.env, 0x18),
+                    &issuer_id_hash(&d.env, 1),
+                    &soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]),
+                ))
+            },
         },
         Case {
             name: "issuer-registry::rotate_issuer_address",
