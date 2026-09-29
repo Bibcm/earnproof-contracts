@@ -160,6 +160,7 @@ fn lookup_helpers_agree_with_the_inventory() {
             "AllowedWasm",
             "Issuer",
             "IssuerTtl",
+            "ReactivatableAt",
             "ScopedPause",
             "UpgradeApprovalMetadata",
             "UpgradeHistory"
@@ -174,13 +175,18 @@ fn lookup_helpers_agree_with_the_inventory() {
             "Admin",
             "ContractVersion",
             "CurrentWasmHash",
+            "Decommissioned",
+            "Genesis",
             "InstanceLiveUntil",
             "IssuerRegistry",
             "IssuerRegistryVersion",
             "LatestUpgradeReceipt",
             "MigrationStatus",
+            "PendingAdmin",
             "ProtocolConfig",
             "ProtocolConfigVersion",
+            "RegistryEpoch",
+            "Successor",
             "UpgradeApproval",
             "UpgradeHistoryCount"
         ]

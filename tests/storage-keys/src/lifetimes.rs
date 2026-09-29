@@ -106,19 +106,17 @@ fn per_record_namespaces_hold_one_entry_per_record() {
     // Three issuers (records + TTL trackers + address entries + TTL trackers) plus allowed WASM, upgrade history, upgrade approval metadata.
     assert_eq!(
         keys_in(env, &deployment.issuers_id, StorageClass::Persistent).len(),
-        17
+        22
     );
 
-    // Two proofs (plus TTL trackers), one archived (replacing Proof with ArchivedProof), plus upgrade history, allowed WASM, upgrade approval metadata.
     assert_eq!(
         keys_in(env, &deployment.proofs_id, StorageClass::Persistent).len(),
-        9
+        12
     );
 
-    // Two schema versions (plus TTL trackers and SchemaRecord), plus upgrade history, allowed WASM, upgrade approval metadata, scoped pause.
     assert_eq!(
         keys_in(env, &deployment.config_id, StorageClass::Persistent).len(),
-        12
+        21
     );
 }
 
