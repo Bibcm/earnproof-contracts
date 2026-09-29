@@ -157,6 +157,10 @@ fn lookup_helpers_agree_with_the_inventory() {
         std::vec![
             "AddressIssuer",
             "AddressTtl",
+            "Issuer",
+            "IssuerTtl",
+            "RotationCount",
+            "RotationHistory"
             "ExecutedProposal",
             "Issuer",
             "IssuerTtl",

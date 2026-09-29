@@ -1,5 +1,7 @@
 # scenario: expired
 # revision: 7
+# reason: Add proof revocation reason commitments and rotation history
+# body-digest: 04b70e200d1d77a412104f8203baa1efc5587236af8c09e001cf892d101839ec
 # reason: Add proposal_id and replay protection to governed functions
 # body-digest: a86758d3c8d85e8c12606dc84b9589cd3d4eb0be13cf030c959415a3fb2b4a34
 

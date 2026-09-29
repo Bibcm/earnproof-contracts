@@ -1,5 +1,7 @@
 # scenario: active
 # revision: 7
+# reason: Add proof revocation reason commitments and rotation history
+# body-digest: cc9fac803f4c12b8ddb8664d4b8100539e2cbffeb4ecd429a0e0b8a746382a61
 # reason: Add proposal_id and replay protection to governed functions
 # body-digest: 431ea7fd58c04a07a72c696c5ec7dbcd8e1d10c1613b09ba7995089e8a456afe
 
