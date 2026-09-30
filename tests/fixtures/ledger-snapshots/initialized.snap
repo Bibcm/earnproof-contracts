@@ -1,8 +1,6 @@
 # scenario: initialized
-# revision: 7
-# reason: Add proof revocation reason commitments and rotation history
-# body-digest: 2afb4dd02cefed5049b6c79f3245b3aba69fb6980a5d06b22347d271acac8f6d
-# reason: Add proposal_id and replay protection to governed functions
+# revision: 8
+# reason: Proof records now persist the disclosure policy commitment and registration events expose it.
 # body-digest: 986627cac275c55da62ec08a0f0af1ef92269981c4571cbd91c766eaaae78d1f
 
 [ledger]

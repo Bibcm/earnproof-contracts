@@ -33,6 +33,11 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
     ),
     ("paused", &["proposal_id", "paused"]),
     ("unpaused", &["proposal_id", "paused"]),
+    ("governance_role_granted", &["assignment", "granted_by"]),
+    (
+        "governance_role_removed",
+        &["role", "address", "removed_by"],
+    ),
     ("schema_approved", &["proposal_id", "version"]),
     ("schema_deprecated", &["proposal_id", "version"]),
     // issuer-registry
@@ -94,16 +99,17 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
         ],
     ),
     (
-        "issuer_suspended",
-        &["issuer_id_hash", "reason_commitment", "updated_at"],
+        "issuer_rotation_nominated",
+        &[
+            "issuer_id_hash",
+            "old_address",
+            "new_address",
+            "expires_at_ledger",
+        ],
     ),
     (
-        "issuer_reactivated",
-        &["issuer_id_hash", "reason_commitment", "updated_at"],
-    ),
-    (
-        "issuer_revoked",
-        &["issuer_id_hash", "reason_commitment", "updated_at"],
+        "issuer_rotation_cancelled",
+        &["issuer_id_hash", "cancelled_by"],
     ),
     (
         "issuer_address_rotated",
@@ -116,7 +122,35 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
         ],
     ),
     // proof-registry
-    ("proof_registered", &["proof_id_hash", "epoch"]),
+    (
+        "proof_registered",
+        &["proof_id_hash", "disclosure_policy_hash", "epoch"],
+    ),
+    (
+        "dependency_replacement_proposed",
+        &[
+            "proposal_id",
+            "issuer_registry",
+            "protocol_config",
+            "expires_at_ledger",
+            "proposed_by",
+        ],
+    ),
+    (
+        "dependency_replacement_cancelled",
+        &["proposal_id", "cancelled_by"],
+    ),
+    (
+        "dependencies_replaced",
+        &[
+            "proposal_id",
+            "previous_issuer_registry",
+            "issuer_registry",
+            "previous_protocol_config",
+            "protocol_config",
+            "activated_by",
+        ],
+    ),
     (
         "proof_registered_with_payload",
         &["proof_id_hash", "payload_len", "payload_hash", "epoch"],
@@ -275,6 +309,13 @@ fn issuer_registry_events_match_their_fixtures() {
         deployment
             .issuers
             .rotate_issuer_address(&deployment.issuer_id, &replacement)
+    }) {
+        assert_matches_fixture(&deployment.env, &event);
+    }
+    for event in deployment.capture(|| {
+        deployment
+            .issuers
+            .accept_issuer_address_rotation(&deployment.issuer_id)
     }) {
         assert_matches_fixture(&deployment.env, &event);
     }

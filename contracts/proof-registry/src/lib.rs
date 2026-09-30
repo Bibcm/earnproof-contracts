@@ -2,12 +2,10 @@
 
 use earnproof_shared::{
     compute_domain_commitment as shared_compute_domain_commitment,
-    compute_domain_separator as shared_compute_domain_separator, ContractError, MigrationStatus,
-    PauseScope, ProofError, ProofRecord, ProofStatus, RevocationRecord, RevokerRole,
-    MAX_MIGRATION_BATCH, MAX_PROOF_BATCH_SIZE, MIGRATION_STATUS_VERSION, TTL_EXTEND_TO_LEDGERS,
-    TTL_THRESHOLD_LEDGERS,
-    is_interface_compatible, ContractError, GenesisRecord, InterfaceVersion, MigrationStatus,
-    ProofError, ProofPayloadRecord, ProofRecord, ProofStatus, ProofValidity, MAX_MIGRATION_BATCH,
+    compute_domain_separator as shared_compute_domain_separator, is_interface_compatible,
+    ContractError, GenesisRecord, GovernanceRole, GovernanceRoleAssignment, InterfaceVersion,
+    MigrationStatus, ProofError, ProofPayloadRecord, ProofRecord, ProofStatus, ProofValidity,
+    RevocationRecord, RevokerRole, MAX_MIGRATION_BATCH, MAX_PROOF_BATCH_SIZE,
     MIGRATION_STATUS_VERSION, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
 };
 use soroban_sdk::{
@@ -21,6 +19,7 @@ const REQUIRED_ISSUER_REGISTRY_VERSION: InterfaceVersion = InterfaceVersion::new
 
 /// Minimum `protocol-config` interface version this contract can bind to.
 const REQUIRED_PROTOCOL_CONFIG_VERSION: InterfaceVersion = InterfaceVersion::new(1, 0, 0);
+const MAX_DEPENDENCY_PROPOSAL_LEDGERS: u32 = 518_400;
 
 #[contractclient(name = "ProtocolConfigContractClient")]
 pub trait ProtocolConfigInterface {
@@ -63,6 +62,29 @@ enum DataKey {
     /// payload (length and commitment hash only — never the raw bytes).
     ProofPayloadMeta(BytesN<32>),
     PendingAdmin,
+    PendingDependencies,
+    LastDependencyReplacement,
+    GovernanceAssignment(GovernanceRole, Address),
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingDependencyReplacement {
+    pub proposal_id: BytesN<32>,
+    pub issuer_registry: Address,
+    pub protocol_config: Address,
+    pub expires_at_ledger: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DependencyReplacementRecord {
+    pub proposal_id: BytesN<32>,
+    pub previous_issuer_registry: Address,
+    pub issuer_registry: Address,
+    pub previous_protocol_config: Address,
+    pub protocol_config: Address,
+    pub activated_at_ledger: u32,
 }
 
 #[contractevent]
@@ -80,6 +102,44 @@ pub struct AdminTransferAccepted {
 pub struct AdminTransferCancelled {
     pub pending_admin: Address,
     pub cancelled_by: Address,
+}
+
+#[contractevent]
+pub struct DependencyReplacementProposed {
+    pub proposal_id: BytesN<32>,
+    pub issuer_registry: Address,
+    pub protocol_config: Address,
+    pub expires_at_ledger: u32,
+    pub proposed_by: Address,
+}
+
+#[contractevent]
+pub struct DependencyReplacementCancelled {
+    pub proposal_id: BytesN<32>,
+    pub cancelled_by: Address,
+}
+
+#[contractevent]
+pub struct DependenciesReplaced {
+    pub proposal_id: BytesN<32>,
+    pub previous_issuer_registry: Address,
+    pub issuer_registry: Address,
+    pub previous_protocol_config: Address,
+    pub protocol_config: Address,
+    pub activated_by: Address,
+}
+
+#[contractevent]
+pub struct GovernanceRoleGranted {
+    pub assignment: GovernanceRoleAssignment,
+    pub granted_by: Address,
+}
+
+#[contractevent]
+pub struct GovernanceRoleRemoved {
+    pub role: GovernanceRole,
+    pub address: Address,
+    pub removed_by: Address,
 }
 
 // ── upgrade events ────────────────────────────────────────────────────────────
@@ -138,6 +198,7 @@ pub struct ContractDecommissioned {
 #[contractevent]
 pub struct ProofRegistered {
     pub proof_id_hash: BytesN<32>,
+    pub disclosure_policy_hash: BytesN<32>,
     pub epoch: u32,
 }
 
@@ -145,6 +206,7 @@ pub struct ProofRegistered {
 #[contractevent]
 pub struct ProofRegisteredWithPayload {
     pub proof_id_hash: BytesN<32>,
+    pub disclosure_policy_hash: BytesN<32>,
     pub payload_len: u32,
     pub payload_hash: BytesN<32>,
     pub epoch: u32,
@@ -160,6 +222,76 @@ pub struct ProofRevoked {
 
 #[contractimpl]
 impl ProofRegistryContract {
+    pub fn grant_governance_role(
+        env: Env,
+        proposal_id: BytesN<32>,
+        role: GovernanceRole,
+        address: Address,
+        activation_ledger: u32,
+        expiration_ledger: Option<u32>,
+    ) -> Result<(), ContractError> {
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        Self::require_valid_principal(&address)?;
+        if role == GovernanceRole::Recovery
+            || expiration_ledger
+                .map(|expiration| expiration <= activation_ledger)
+                .unwrap_or(false)
+        {
+            return Err(ContractError::InvalidTimingConfig);
+        }
+        Self::consume_proposal(&env, &proposal_id)?;
+        let assignment = GovernanceRoleAssignment {
+            role,
+            address: address.clone(),
+            activation_ledger,
+            expiration_ledger,
+            proposal_id,
+        };
+        let key = DataKey::GovernanceAssignment(role, address);
+        env.storage().persistent().set(&key, &assignment);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+        GovernanceRoleGranted {
+            assignment,
+            granted_by: admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn get_governance_assignment(
+        env: Env,
+        role: GovernanceRole,
+        address: Address,
+    ) -> Option<GovernanceRoleAssignment> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::GovernanceAssignment(role, address))
+    }
+
+    pub fn remove_governance_role(
+        env: Env,
+        role: GovernanceRole,
+        address: Address,
+    ) -> Result<(), ContractError> {
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        let key = DataKey::GovernanceAssignment(role, address.clone());
+        if !env.storage().persistent().has(&key) {
+            return Err(ContractError::NotFound);
+        }
+        env.storage().persistent().remove(&key);
+        GovernanceRoleRemoved {
+            role,
+            address,
+            removed_by: admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
     pub fn is_decommissioned(env: Env) -> bool {
         env.storage()
             .instance()
@@ -360,6 +492,49 @@ impl ProofRegistryContract {
         schema_version: u32,
         expires_at: u64,
     ) -> Result<(), ProofError> {
+        Self::register_proof_inner(
+            env.clone(),
+            proof_id_hash,
+            commitment_hash,
+            BytesN::from_array(&env, &[0u8; 32]),
+            issuer_address,
+            schema_version,
+            expires_at,
+        )
+    }
+
+    pub fn register_proof_with_policy(
+        env: Env,
+        proof_id_hash: BytesN<32>,
+        commitment_hash: BytesN<32>,
+        disclosure_policy_hash: BytesN<32>,
+        issuer_address: Address,
+        schema_version: u32,
+        expires_at: u64,
+    ) -> Result<(), ProofError> {
+        if disclosure_policy_hash == BytesN::from_array(&env, &[0u8; 32]) {
+            return Err(ProofError::MalformedInput);
+        }
+        Self::register_proof_inner(
+            env,
+            proof_id_hash,
+            commitment_hash,
+            disclosure_policy_hash,
+            issuer_address,
+            schema_version,
+            expires_at,
+        )
+    }
+
+    fn register_proof_inner(
+        env: Env,
+        proof_id_hash: BytesN<32>,
+        commitment_hash: BytesN<32>,
+        disclosure_policy_hash: BytesN<32>,
+        issuer_address: Address,
+        schema_version: u32,
+        expires_at: u64,
+    ) -> Result<(), ProofError> {
         Self::ensure_not_decommissioned(&env)?;
         Self::require_valid_issuer_address(&issuer_address)?;
         let protocol_config =
@@ -415,6 +590,7 @@ impl ProofRegistryContract {
         let record = ProofRecord {
             proof_id_hash: proof_id_hash.clone(),
             commitment_hash,
+            disclosure_policy_hash: disclosure_policy_hash.clone(),
             issuer_address: issuer_address.clone(),
             status: ProofStatus::Active,
             schema_version,
@@ -429,6 +605,7 @@ impl ProofRegistryContract {
         let epoch = Self::bump_registry_epoch(&env);
         ProofRegistered {
             proof_id_hash,
+            disclosure_policy_hash,
             epoch,
         }
         .publish(&env);
@@ -445,6 +622,55 @@ impl ProofRegistryContract {
         env: Env,
         proof_id_hash: BytesN<32>,
         commitment_hash: BytesN<32>,
+        issuer_address: Address,
+        schema_version: u32,
+        expires_at: u64,
+        payload: Bytes,
+    ) -> Result<(), ProofError> {
+        Self::register_proof_with_payload_inner(
+            env.clone(),
+            proof_id_hash,
+            commitment_hash,
+            BytesN::from_array(&env, &[0u8; 32]),
+            issuer_address,
+            schema_version,
+            expires_at,
+            payload,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn register_proof_payload_policy(
+        env: Env,
+        proof_id_hash: BytesN<32>,
+        commitment_hash: BytesN<32>,
+        disclosure_policy_hash: BytesN<32>,
+        issuer_address: Address,
+        schema_version: u32,
+        expires_at: u64,
+        payload: Bytes,
+    ) -> Result<(), ProofError> {
+        if disclosure_policy_hash == BytesN::from_array(&env, &[0u8; 32]) {
+            return Err(ProofError::MalformedInput);
+        }
+        Self::register_proof_with_payload_inner(
+            env,
+            proof_id_hash,
+            commitment_hash,
+            disclosure_policy_hash,
+            issuer_address,
+            schema_version,
+            expires_at,
+            payload,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn register_proof_with_payload_inner(
+        env: Env,
+        proof_id_hash: BytesN<32>,
+        commitment_hash: BytesN<32>,
+        disclosure_policy_hash: BytesN<32>,
         issuer_address: Address,
         schema_version: u32,
         expires_at: u64,
@@ -505,6 +731,7 @@ impl ProofRegistryContract {
         let record = ProofRecord {
             proof_id_hash: proof_id_hash.clone(),
             commitment_hash,
+            disclosure_policy_hash: disclosure_policy_hash.clone(),
             issuer_address,
             status: ProofStatus::Active,
             schema_version,
@@ -528,6 +755,7 @@ impl ProofRegistryContract {
         let epoch = Self::bump_registry_epoch(&env);
         ProofRegisteredWithPayload {
             proof_id_hash,
+            disclosure_policy_hash,
             payload_len,
             payload_hash,
             epoch,
@@ -542,6 +770,14 @@ impl ProofRegistryContract {
 
     pub fn admin_revoke_proof(env: Env, proof_id_hash: BytesN<32>) -> Result<(), ProofError> {
         Self::set_revoked(env, proof_id_hash, true, None)
+    }
+
+    pub fn admin_revoke_proof_by_role(
+        env: Env,
+        proof_id_hash: BytesN<32>,
+        actor: Address,
+    ) -> Result<(), ProofError> {
+        Self::set_revoked_as(env, proof_id_hash, true, None, Some(actor))
     }
 
     pub fn revoke_proof_with_reason(
@@ -829,56 +1065,163 @@ impl ProofRegistryContract {
         Ok(ProtocolConfigContractClient::new(&env, &address).interface_version())
     }
 
-    /// Admin-only: replace the bound issuer registry.
-    ///
-    /// The replacement is validated as a distinct, well-formed principal and
-    /// must pass the interface handshake before it is stored. The check is not
-    /// gated by any paused state and does not run through the upgrade flow, so
-    /// it cannot be bypassed.
-    pub fn set_issuer_registry(
+    pub fn propose_dependency_replacement(
         env: Env,
-        new_issuer_registry: Address,
+        proposal_id: BytesN<32>,
+        issuer_registry: Address,
+        protocol_config: Address,
+        expires_at_ledger: u32,
     ) -> Result<(), ContractError> {
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
+        Self::validate_dependency_addresses(&env, &issuer_registry, &protocol_config)?;
+        Self::require_compatible_dependencies(&env, &issuer_registry, &protocol_config)?;
 
-        let protocol_config = Self::get_protocol_config(env.clone())?;
-        Self::validate_dependency_addresses(&env, &new_issuer_registry, &protocol_config)?;
-        let actual =
-            IssuerRegistryContractClient::new(&env, &new_issuer_registry).interface_version();
-        if !is_interface_compatible(&REQUIRED_ISSUER_REGISTRY_VERSION, &actual) {
-            return Err(ContractError::IncompatibleInterfaceVersion);
+        let now = env.ledger().sequence();
+        if expires_at_ledger <= now
+            || expires_at_ledger > now.saturating_add(MAX_DEPENDENCY_PROPOSAL_LEDGERS)
+        {
+            return Err(ContractError::InvalidTimingConfig);
         }
-
+        if let Some(pending) = env
+            .storage()
+            .instance()
+            .get::<_, PendingDependencyReplacement>(&DataKey::PendingDependencies)
+        {
+            if now < pending.expires_at_ledger {
+                return Err(ContractError::AlreadyExists);
+            }
+        }
+        Self::consume_proposal(&env, &proposal_id)?;
+        let pending = PendingDependencyReplacement {
+            proposal_id: proposal_id.clone(),
+            issuer_registry: issuer_registry.clone(),
+            protocol_config: protocol_config.clone(),
+            expires_at_ledger,
+        };
         env.storage()
             .instance()
-            .set(&DataKey::IssuerRegistry, &new_issuer_registry);
-        Self::extend_instance_ttl(env);
+            .set(&DataKey::PendingDependencies, &pending);
+        Self::extend_instance_ttl(env.clone());
+        DependencyReplacementProposed {
+            proposal_id,
+            issuer_registry,
+            protocol_config,
+            expires_at_ledger,
+            proposed_by: admin,
+        }
+        .publish(&env);
         Ok(())
     }
 
-    /// Admin-only: replace the bound protocol config. Same guarantees as
-    /// `set_issuer_registry`.
-    pub fn set_protocol_config(
+    pub fn get_pending_dependencies(env: Env) -> Option<PendingDependencyReplacement> {
+        env.storage().instance().get(&DataKey::PendingDependencies)
+    }
+
+    pub fn get_last_dependency_replacement(env: Env) -> Option<DependencyReplacementRecord> {
+        env.storage()
+            .instance()
+            .get(&DataKey::LastDependencyReplacement)
+    }
+
+    pub fn cancel_dependency_replacement(env: Env) -> Result<(), ContractError> {
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        let pending: PendingDependencyReplacement = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingDependencies)
+            .ok_or(ContractError::NotFound)?;
+        env.storage()
+            .instance()
+            .remove(&DataKey::PendingDependencies);
+        DependencyReplacementCancelled {
+            proposal_id: pending.proposal_id,
+            cancelled_by: admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn activate_dependency_replacement(
         env: Env,
-        new_protocol_config: Address,
+        proposal_id: BytesN<32>,
     ) -> Result<(), ContractError> {
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
-
-        let issuer_registry = Self::get_issuer_registry(env.clone())?;
-        Self::validate_dependency_addresses(&env, &issuer_registry, &new_protocol_config)?;
-        let actual =
-            ProtocolConfigContractClient::new(&env, &new_protocol_config).interface_version();
-        if !is_interface_compatible(&REQUIRED_PROTOCOL_CONFIG_VERSION, &actual) {
-            return Err(ContractError::IncompatibleInterfaceVersion);
+        let pending: PendingDependencyReplacement = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingDependencies)
+            .ok_or(ContractError::NotFound)?;
+        if pending.proposal_id != proposal_id {
+            return Err(ContractError::InvalidState);
+        }
+        if env.ledger().sequence() >= pending.expires_at_ledger {
+            return Err(ContractError::InvalidState);
         }
 
+        Self::validate_dependency_addresses(
+            &env,
+            &pending.issuer_registry,
+            &pending.protocol_config,
+        )?;
+        Self::require_compatible_dependencies(
+            &env,
+            &pending.issuer_registry,
+            &pending.protocol_config,
+        )?;
+        let previous_issuer_registry = Self::get_issuer_registry(env.clone())?;
+        let previous_protocol_config = Self::get_protocol_config(env.clone())?;
+        let record = DependencyReplacementRecord {
+            proposal_id: proposal_id.clone(),
+            previous_issuer_registry: previous_issuer_registry.clone(),
+            issuer_registry: pending.issuer_registry.clone(),
+            previous_protocol_config: previous_protocol_config.clone(),
+            protocol_config: pending.protocol_config.clone(),
+            activated_at_ledger: env.ledger().sequence(),
+        };
         env.storage()
             .instance()
-            .set(&DataKey::ProtocolConfig, &new_protocol_config);
-        Self::extend_instance_ttl(env);
+            .set(&DataKey::IssuerRegistry, &pending.issuer_registry);
+        env.storage()
+            .instance()
+            .set(&DataKey::ProtocolConfig, &pending.protocol_config);
+        env.storage()
+            .instance()
+            .set(&DataKey::LastDependencyReplacement, &record);
+        env.storage()
+            .instance()
+            .remove(&DataKey::PendingDependencies);
+        Self::extend_instance_ttl(env.clone());
+        DependenciesReplaced {
+            proposal_id,
+            previous_issuer_registry,
+            issuer_registry: pending.issuer_registry,
+            previous_protocol_config,
+            protocol_config: pending.protocol_config,
+            activated_by: admin,
+        }
+        .publish(&env);
         Ok(())
+    }
+
+    /// Kept for ABI compatibility; dependency changes must use the paired
+    /// proposal and activation flow.
+    pub fn set_issuer_registry(
+        _env: Env,
+        _new_issuer_registry: Address,
+    ) -> Result<(), ContractError> {
+        Err(ContractError::InvalidState)
+    }
+
+    /// Kept for ABI compatibility; dependency changes must use the paired
+    /// proposal and activation flow.
+    pub fn set_protocol_config(
+        _env: Env,
+        _new_protocol_config: Address,
+    ) -> Result<(), ContractError> {
+        Err(ContractError::InvalidState)
     }
 
     // ── upgrade governance ────────────────────────────────────────────────────
@@ -1081,6 +1424,16 @@ impl ProofRegistryContract {
         by_admin: bool,
         reason_commitment: Option<BytesN<32>>,
     ) -> Result<(), ProofError> {
+        Self::set_revoked_as(env, proof_id_hash, by_admin, reason_commitment, None)
+    }
+
+    fn set_revoked_as(
+        env: Env,
+        proof_id_hash: BytesN<32>,
+        by_admin: bool,
+        reason_commitment: Option<BytesN<32>>,
+        actor: Option<Address>,
+    ) -> Result<(), ProofError> {
         Self::ensure_not_decommissioned(&env)?;
         let key = DataKey::Proof(proof_id_hash.clone());
         let mut record: ProofRecord = env
@@ -1091,8 +1444,24 @@ impl ProofRegistryContract {
 
         let (revoker, revoker_role) = if by_admin {
             let admin = Self::get_admin(env.clone()).map_err(|_| ProofError::ProofNotFound)?;
-            Self::require_auth(&admin);
-            (admin, RevokerRole::Admin)
+            let revoker = actor.unwrap_or(admin.clone());
+            if revoker == admin {
+                Self::require_auth(&admin);
+            } else {
+                let assignment: GovernanceRoleAssignment = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::GovernanceAssignment(
+                        GovernanceRole::ProofAdministration,
+                        revoker.clone(),
+                    ))
+                    .ok_or(ProofError::InvalidAddress)?;
+                if !assignment.is_active_at(env.ledger().sequence()) {
+                    return Err(ProofError::InvalidAddress);
+                }
+                Self::require_auth(&revoker);
+            }
+            (revoker, RevokerRole::Admin)
         } else {
             Self::require_auth(&record.issuer_address);
             (record.issuer_address.clone(), RevokerRole::Issuer)
@@ -1116,9 +1485,9 @@ impl ProofRegistryContract {
             revoked_at: record.revoked_at,
             ledger_sequence: env.ledger().sequence(),
         };
-        let rev_key = DataKey::RevocationInfo(proof_id_hash);
+        let rev_key = DataKey::RevocationInfo(proof_id_hash.clone());
         env.storage().persistent().set(&rev_key, &revocation_record);
-        Self::extend_proof_key_ttl(env, &rev_key);
+        Self::extend_proof_key_ttl(env.clone(), &rev_key);
         let epoch = Self::bump_registry_epoch(&env);
         ProofRevoked {
             proof_id_hash,
@@ -1254,7 +1623,7 @@ mod test {
     use issuer_registry::{IssuerRegistryContract, IssuerRegistryContractClient};
     use protocol_config::{ProtocolConfigContract, ProtocolConfigContractClient};
     use soroban_sdk::{
-        testutils::{storage::Persistent as _, Ledger as _},
+        testutils::{storage::Persistent as _, Address as _, Ledger as _},
         Address, BytesN, Env,
     };
 
@@ -2564,6 +2933,8 @@ mod test {
 
         let result = client.try_is_valid_proof_batch(&oversized_batch);
         assert_eq!(result, Err(Ok(ContractError::InvalidInput)));
+    }
+
     // ── genesis identity (issue #192) ────────────────────────────────────────
 
     #[test]
@@ -3090,9 +3461,20 @@ mod test {
     fn governed_replacement_accepts_a_newer_compatible_dependency() {
         let (env, client, ..) = setup();
         let newer = env.register(NewerCompatibleDependency, ());
-        client.set_issuer_registry(&newer);
+        let proposal_id = bytes(&env, 0x95);
+        let expiry = env.ledger().sequence() + 100;
+        let original_registry = client.get_issuer_registry();
+        let protocol_config = client.get_protocol_config();
+        client.propose_dependency_replacement(&proposal_id, &newer, &protocol_config, &expiry);
+        let pending = client.get_pending_dependencies().unwrap();
+        assert_eq!(pending.issuer_registry, newer);
+        assert_eq!(pending.protocol_config, protocol_config);
+        client.activate_dependency_replacement(&proposal_id);
         assert_eq!(client.get_issuer_registry(), newer);
         assert_eq!(client.bound_issuer_registry_version().minor, 5);
+        let replacement = client.get_last_dependency_replacement().unwrap();
+        assert_eq!(replacement.previous_issuer_registry, original_registry);
+        assert_eq!(replacement.issuer_registry, newer);
     }
 
     #[test]
@@ -3101,7 +3483,13 @@ mod test {
         let original = client.get_issuer_registry();
         let bad = env.register(IncompatibleDependency, ());
 
-        let result = client.try_set_issuer_registry(&bad);
+        let protocol_config = client.get_protocol_config();
+        let result = client.try_propose_dependency_replacement(
+            &bytes(&env, 0x96),
+            &bad,
+            &protocol_config,
+            &(env.ledger().sequence() + 100),
+        );
         assert_eq!(
             result,
             Err(Ok(
@@ -3119,12 +3507,153 @@ mod test {
         let bad = env.register(IncompatibleDependency, ());
 
         // Even while paused, the interface check still runs and rejects.
-        let result = client.try_set_issuer_registry(&bad);
+        let result = client.try_propose_dependency_replacement(
+            &bytes(&env, 0x97),
+            &bad,
+            &client.get_protocol_config(),
+            &(env.ledger().sequence() + 100),
+        );
         assert_eq!(
             result,
             Err(Ok(
                 earnproof_shared::ContractError::IncompatibleInterfaceVersion
             ))
         );
+    }
+
+    #[test]
+    fn dependency_proposal_rejects_incompatible_dependency_and_zero_expiry() {
+        let (env, client, ..) = setup();
+        let invalid_dependency = env.register(IncompatibleDependency, ());
+        let config = client.get_protocol_config();
+        let result = client.try_propose_dependency_replacement(
+            &bytes(&env, 0x98),
+            &invalid_dependency,
+            &config,
+            &(env.ledger().sequence() + 10),
+        );
+        assert_eq!(
+            result,
+            Err(Ok(
+                earnproof_shared::ContractError::IncompatibleInterfaceVersion
+            ))
+        );
+
+        let registry = client.get_issuer_registry();
+        let result = client.try_propose_dependency_replacement(
+            &bytes(&env, 0x99),
+            &registry,
+            &config,
+            &env.ledger().sequence(),
+        );
+        assert_eq!(
+            result,
+            Err(Ok(earnproof_shared::ContractError::InvalidTimingConfig))
+        );
+
+        let replacement = env.register(NewerCompatibleDependency, ());
+        let proposal_id = bytes(&env, 0x9A);
+        client.propose_dependency_replacement(
+            &proposal_id,
+            &replacement,
+            &config,
+            &(env.ledger().sequence() + 10),
+        );
+        client.cancel_dependency_replacement();
+        assert!(client.get_pending_dependencies().is_none());
+        assert_eq!(client.get_issuer_registry(), registry);
+    }
+
+    #[test]
+    fn expired_dependency_proposal_cannot_activate_or_replay() {
+        let (env, client, ..) = setup();
+        let replacement = env.register(NewerCompatibleDependency, ());
+        let original = client.get_issuer_registry();
+        let proposal_id = bytes(&env, 0x9B);
+        let expiry = env.ledger().sequence() + 2;
+        client.propose_dependency_replacement(
+            &proposal_id,
+            &replacement,
+            &client.get_protocol_config(),
+            &expiry,
+        );
+        env.ledger()
+            .with_mut(|ledger| ledger.sequence_number = expiry);
+        assert_eq!(
+            client.try_activate_dependency_replacement(&proposal_id),
+            Err(Ok(earnproof_shared::ContractError::InvalidState))
+        );
+        assert_eq!(client.get_issuer_registry(), original);
+        client.cancel_dependency_replacement();
+        assert_eq!(
+            client.try_propose_dependency_replacement(
+                &proposal_id,
+                &replacement,
+                &client.get_protocol_config(),
+                &(expiry + 10),
+            ),
+            Err(Ok(earnproof_shared::ContractError::AlreadyExists))
+        );
+    }
+
+    #[test]
+    fn policy_hash_is_nonzero_immutable_and_carried_by_event() {
+        let (env, client, ..) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let policy_hash = bytes(&env, 0xA1);
+        let proof_id = bytes(&env, 0xA2);
+        let result = client.try_register_proof_with_policy(
+            &bytes(&env, 0xA3),
+            &bytes(&env, 0xA4),
+            &bytes(&env, 0),
+            &issuer,
+            &1,
+            &2_000,
+        );
+        assert_eq!(result, Err(Ok(ProofError::MalformedInput)));
+
+        client.register_proof_with_policy(
+            &proof_id,
+            &bytes(&env, 0xA4),
+            &policy_hash,
+            &issuer,
+            &1,
+            &2_000,
+        );
+        let record = client.get_proof(&proof_id);
+        assert_eq!(record.disclosure_policy_hash, policy_hash);
+        assert_eq!(
+            client.get_proof(&proof_id).disclosure_policy_hash,
+            policy_hash
+        );
+    }
+
+    #[test]
+    fn expiring_proof_administration_role_rejects_after_expiry() {
+        let (env, client, ..) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let delegate = Address::generate(&env);
+        let proof_id = bytes(&env, 0xB1);
+        client.register_proof(&proof_id, &bytes(&env, 0xB2), &issuer, &1, &2_000);
+        let activation = env.ledger().sequence();
+        let expiration = activation + 2;
+        client.grant_governance_role(
+            &bytes(&env, 0xB3),
+            &earnproof_shared::GovernanceRole::ProofAdministration,
+            &delegate,
+            &activation,
+            &Some(expiration),
+        );
+        client.admin_revoke_proof_by_role(&proof_id, &delegate);
+        assert!(client.is_revoked(&proof_id));
+
+        let next_id = bytes(&env, 0xB4);
+        client.register_proof(&next_id, &bytes(&env, 0xB5), &issuer, &1, &2_000);
+        env.ledger()
+            .with_mut(|ledger| ledger.sequence_number = expiration);
+        assert!(client
+            .try_admin_revoke_proof_by_role(&next_id, &delegate)
+            .is_err());
+        assert!(!client.is_revoked(&next_id));
     }
 }

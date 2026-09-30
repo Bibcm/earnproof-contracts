@@ -98,6 +98,7 @@ import type {
   InitializeProofRegistryResult,
   RegisterProofParams,
   RegisterProofResult,
+  RegisterProofWithPolicyParams,
   RevokeProofParams,
   RevokeProofResult,
   AdminRevokeProofParams,
@@ -721,6 +722,25 @@ export class EarnProofClient {
       [
         nativeToScVal(this.hexToBytes(params.proof_id_hash), { type: "bytes" }),
         nativeToScVal(this.hexToBytes(params.commitment_hash), { type: "bytes" }),
+        nativeToScVal(params.issuer_address, { type: "address" }),
+        nativeToScVal(params.schema_version, { type: "u32" }),
+        nativeToScVal(params.expires_at, { type: "u64" }),
+      ],
+      () => undefined
+    );
+  }
+
+  async registerProofWithPolicy(
+    params: RegisterProofWithPolicyParams
+  ): Promise<RegisterProofResult> {
+    return this.invoke(
+      this.proofRegistry,
+      this.config.proofRegistryId,
+      "register_proof_with_policy",
+      [
+        nativeToScVal(this.hexToBytes(params.proof_id_hash), { type: "bytes" }),
+        nativeToScVal(this.hexToBytes(params.commitment_hash), { type: "bytes" }),
+        nativeToScVal(this.hexToBytes(params.disclosure_policy_hash), { type: "bytes" }),
         nativeToScVal(params.issuer_address, { type: "address" }),
         nativeToScVal(params.schema_version, { type: "u32" }),
         nativeToScVal(params.expires_at, { type: "u64" }),

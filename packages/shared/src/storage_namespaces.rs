@@ -49,8 +49,7 @@ pub const CONTRACTS: [&str; 3] = ["issuer-registry", "proof-registry", "protocol
 /// Adding a row here is the second half of adding a storage key; the first is
 /// adding the `DataKey` variant. Doing one without the other fails the tests in
 /// `tests/storage-keys/`.
-pub const STORAGE_NAMESPACES: [StorageNamespace; 30] = [
-pub const STORAGE_NAMESPACES: [StorageNamespace; 43] = [
+pub const STORAGE_NAMESPACES: [StorageNamespace; 52] = [
     StorageNamespace {
         contract: "issuer-registry",
         namespace: "ActiveIssuerCount",
@@ -117,6 +116,14 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 43] = [
     },
     StorageNamespace {
         contract: "issuer-registry",
+        namespace: "GovernanceAssignment",
+        arity: 2,
+        class: StorageClass::Persistent,
+        value: "GovernanceRoleAssignment",
+        owner: "governance operator",
+    },
+    StorageNamespace {
+        contract: "issuer-registry",
         namespace: "InstanceLiveUntil",
         arity: 0,
         class: StorageClass::Instance,
@@ -165,10 +172,14 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 43] = [
     },
     StorageNamespace {
         contract: "issuer-registry",
-        namespace: "RotationCount",
+        namespace: "PendingIssuerRotation",
         arity: 1,
         class: StorageClass::Persistent,
-        value: "u32",
+        value: "PendingIssuerRotation",
+        owner: "issuing party",
+    },
+    StorageNamespace {
+        contract: "issuer-registry",
         namespace: "ReactivatableAt",
         arity: 1,
         class: StorageClass::Persistent,
@@ -177,14 +188,26 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 43] = [
     },
     StorageNamespace {
         contract: "issuer-registry",
-        namespace: "RotationHistory",
-        arity: 2,
-        class: StorageClass::Persistent,
-        value: "RotationRecord",
         namespace: "ReactivationCooldown",
         arity: 0,
         class: StorageClass::Instance,
         value: "u64",
+        owner: "registry operator",
+    },
+    StorageNamespace {
+        contract: "issuer-registry",
+        namespace: "RotationCount",
+        arity: 1,
+        class: StorageClass::Persistent,
+        value: "u32",
+        owner: "registry operator",
+    },
+    StorageNamespace {
+        contract: "issuer-registry",
+        namespace: "RotationHistory",
+        arity: 2,
+        class: StorageClass::Persistent,
+        value: "RotationRecord",
         owner: "registry operator",
     },
     StorageNamespace {
@@ -237,6 +260,14 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 43] = [
     },
     StorageNamespace {
         contract: "proof-registry",
+        namespace: "GovernanceAssignment",
+        arity: 2,
+        class: StorageClass::Persistent,
+        value: "GovernanceRoleAssignment",
+        owner: "governance operator",
+    },
+    StorageNamespace {
+        contract: "proof-registry",
         namespace: "IssuerRegistry",
         arity: 0,
         class: StorageClass::Instance,
@@ -245,11 +276,27 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 43] = [
     },
     StorageNamespace {
         contract: "proof-registry",
+        namespace: "LastDependencyReplacement",
+        arity: 0,
+        class: StorageClass::Instance,
+        value: "DependencyReplacementRecord",
+        owner: "governance operator",
+    },
+    StorageNamespace {
+        contract: "proof-registry",
         namespace: "MigrationStatus",
         arity: 0,
         class: StorageClass::Instance,
         value: "MigrationStatus",
         owner: "deployment operator",
+    },
+    StorageNamespace {
+        contract: "proof-registry",
+        namespace: "PendingDependencies",
+        arity: 0,
+        class: StorageClass::Instance,
+        value: "PendingDependencyReplacement",
+        owner: "governance operator",
     },
     StorageNamespace {
         contract: "proof-registry",
@@ -277,16 +324,19 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 43] = [
     },
     StorageNamespace {
         contract: "proof-registry",
-        namespace: "RevocationInfo",
-        arity: 1,
-        class: StorageClass::Persistent,
-        value: "RevocationRecord",
-        owner: "issuing party",
         namespace: "RegistryEpoch",
         arity: 0,
         class: StorageClass::Instance,
         value: "u32",
         owner: "deployment operator",
+    },
+    StorageNamespace {
+        contract: "proof-registry",
+        namespace: "RevocationInfo",
+        arity: 1,
+        class: StorageClass::Persistent,
+        value: "RevocationRecord",
+        owner: "issuing party",
     },
     StorageNamespace {
         contract: "proof-registry",
@@ -358,6 +408,14 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 43] = [
         arity: 0,
         class: StorageClass::Instance,
         value: "GenesisRecord",
+        owner: "protocol operator",
+    },
+    StorageNamespace {
+        contract: "protocol-config",
+        namespace: "GovernanceAssignment",
+        arity: 2,
+        class: StorageClass::Persistent,
+        value: "GovernanceRoleAssignment",
         owner: "protocol operator",
     },
     StorageNamespace {

@@ -157,14 +157,27 @@ fn lookup_helpers_agree_with_the_inventory() {
         std::vec![
             "AddressIssuer",
             "AddressTtl",
-            "Issuer",
-            "IssuerTtl",
-            "RotationCount",
-            "RotationHistory"
             "ExecutedProposal",
+            "GovernanceAssignment",
             "Issuer",
             "IssuerTtl",
+            "PendingIssuerRotation",
             "ReactivatableAt",
+            "RotationCount",
+            "RotationHistory",
+        ]
+    );
+
+    let proof_persistent: std::vec::Vec<&str> =
+        namespaces_for("proof-registry", StorageClass::Persistent).collect();
+    assert_eq!(
+        proof_persistent,
+        std::vec![
+            "ExecutedProposal",
+            "GovernanceAssignment",
+            "Proof",
+            "ProofPayloadMeta",
+            "RevocationInfo",
         ]
     );
 
@@ -178,7 +191,9 @@ fn lookup_helpers_agree_with_the_inventory() {
             "Decommissioned",
             "Genesis",
             "IssuerRegistry",
+            "LastDependencyReplacement",
             "MigrationStatus",
+            "PendingDependencies",
             "ProtocolConfig",
             "RegistryEpoch",
             "Successor"

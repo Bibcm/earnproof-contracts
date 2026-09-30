@@ -1,10 +1,11 @@
 #![no_std]
 
 use earnproof_shared::{
-    ConfigChangeCategory, ConfigChangeSummary, ContractError, GenesisRecord, InterfaceVersion,
-    MigrationStatus, PauseScope, CONFIG_HISTORY_CAPACITY, DEFAULT_SCHEMA_PAYLOAD_LIMIT,
-    MAX_CONFIG_HISTORY_PAGE, MAX_MIGRATION_BATCH, MIGRATION_STATUS_VERSION,
-    PROTOCOL_CONFIG_INTERFACE_VERSION, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
+    ConfigChangeCategory, ConfigChangeSummary, ContractError, GenesisRecord, GovernanceRole,
+    GovernanceRoleAssignment, InterfaceVersion, MigrationStatus, PauseScope,
+    CONFIG_HISTORY_CAPACITY, DEFAULT_SCHEMA_PAYLOAD_LIMIT, MAX_CONFIG_HISTORY_PAGE,
+    MAX_MIGRATION_BATCH, MIGRATION_STATUS_VERSION, PROTOCOL_CONFIG_INTERFACE_VERSION,
+    TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
 };
 use soroban_sdk::{
     contract, contractevent, contractimpl, contracttype, xdr::ToXdr, Address, BytesN, Env, Vec,
@@ -39,6 +40,7 @@ enum DataKey {
     ConfigHistoryRing(u32),
     /// Monotonic count of change-history entries ever appended.
     ConfigHistoryTotal,
+    GovernanceAssignment(GovernanceRole, Address),
 }
 
 // ── admin transfer events ─────────────────────────────────────────────────────────
@@ -126,6 +128,19 @@ pub struct SchemaPayloadLimitSet {
     pub max_size: u32,
 }
 
+#[contractevent]
+pub struct GovernanceRoleGranted {
+    pub assignment: GovernanceRoleAssignment,
+    pub granted_by: Address,
+}
+
+#[contractevent]
+pub struct GovernanceRoleRemoved {
+    pub role: GovernanceRole,
+    pub address: Address,
+    pub removed_by: Address,
+}
+
 // ── upgrade events ───────────────────────────────────────────────────────────
 
 /// Emitted when the admin adds a WASM hash to the upgrade allowlist.
@@ -157,6 +172,127 @@ pub struct ContractUpgraded {
 
 #[contractimpl]
 impl ProtocolConfigContract {
+    pub fn grant_governance_role(
+        env: Env,
+        proposal_id: BytesN<32>,
+        role: GovernanceRole,
+        address: Address,
+        activation_ledger: u32,
+        expiration_ledger: Option<u32>,
+    ) -> Result<(), ContractError> {
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        Self::require_valid_principal(&address)?;
+        if role == GovernanceRole::Recovery
+            || expiration_ledger
+                .map(|expiration| expiration <= activation_ledger)
+                .unwrap_or(false)
+        {
+            return Err(ContractError::InvalidTimingConfig);
+        }
+        Self::consume_proposal(&env, &proposal_id)?;
+        let assignment = GovernanceRoleAssignment {
+            role,
+            address: address.clone(),
+            activation_ledger,
+            expiration_ledger,
+            proposal_id,
+        };
+        let key = DataKey::GovernanceAssignment(role, address);
+        env.storage().persistent().set(&key, &assignment);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+        GovernanceRoleGranted {
+            assignment,
+            granted_by: admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn get_governance_assignment(
+        env: Env,
+        role: GovernanceRole,
+        address: Address,
+    ) -> Option<GovernanceRoleAssignment> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::GovernanceAssignment(role, address))
+    }
+
+    pub fn remove_governance_role(
+        env: Env,
+        role: GovernanceRole,
+        address: Address,
+    ) -> Result<(), ContractError> {
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        let key = DataKey::GovernanceAssignment(role, address.clone());
+        if !env.storage().persistent().has(&key) {
+            return Err(ContractError::NotFound);
+        }
+        env.storage().persistent().remove(&key);
+        GovernanceRoleRemoved {
+            role,
+            address,
+            removed_by: admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn pause_by_role(
+        env: Env,
+        proposal_id: BytesN<32>,
+        actor: Address,
+    ) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        Self::require_role_or_admin(&env, &actor, GovernanceRole::ProtocolPause)?;
+        Self::consume_proposal(&env, &proposal_id)?;
+        env.storage().instance().set(&DataKey::Paused, &true);
+        Self::bump_config_version(env.clone());
+        Self::append_config_history(
+            env.clone(),
+            ConfigChangeCategory::PauseToggle,
+            Self::commit(&env, true),
+        );
+        Paused {
+            proposal_id,
+            paused: true,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn approve_schema_by_role(
+        env: Env,
+        proposal_id: BytesN<32>,
+        version: u32,
+        actor: Address,
+    ) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        Self::require_role_or_admin(&env, &actor, GovernanceRole::SchemaManagement)?;
+        Self::ensure_nonzero_version(version)?;
+        Self::consume_proposal(&env, &proposal_id)?;
+        env.storage()
+            .persistent()
+            .set(&DataKey::SchemaVersion(version), &true);
+        Self::extend_schema_ttl(env.clone(), version);
+        Self::bump_config_version(env.clone());
+        Self::append_config_history(
+            env.clone(),
+            ConfigChangeCategory::SchemaApproval,
+            Self::commit(&env, version),
+        );
+        SchemaApproved {
+            proposal_id,
+            version,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
     pub fn is_decommissioned(env: Env) -> bool {
         env.storage()
             .instance()
@@ -352,7 +488,7 @@ impl ProtocolConfigContract {
     pub fn pause(env: Env, proposal_id: BytesN<32>) -> Result<(), ContractError> {
         Self::ensure_not_decommissioned(&env)?;
         let admin = Self::get_admin(env.clone())?;
-        Self::require_auth(&admin);
+        Self::require_role_or_admin(&env, &admin, GovernanceRole::ProtocolPause)?;
         Self::consume_proposal(&env, &proposal_id)?;
         env.storage().instance().set(&DataKey::Paused, &true);
         Self::bump_config_version(env.clone());
@@ -372,7 +508,7 @@ impl ProtocolConfigContract {
     pub fn unpause(env: Env, proposal_id: BytesN<32>) -> Result<(), ContractError> {
         Self::ensure_not_decommissioned(&env)?;
         let admin = Self::get_admin(env.clone())?;
-        Self::require_auth(&admin);
+        Self::require_role_or_admin(&env, &admin, GovernanceRole::ProtocolPause)?;
         Self::consume_proposal(&env, &proposal_id)?;
         env.storage().instance().set(&DataKey::Paused, &false);
         Self::bump_config_version(env.clone());
@@ -396,7 +532,7 @@ impl ProtocolConfigContract {
     ) -> Result<(), ContractError> {
         Self::ensure_not_decommissioned(&env)?;
         let admin = Self::get_admin(env.clone())?;
-        Self::require_auth(&admin);
+        Self::require_role_or_admin(&env, &admin, GovernanceRole::ProtocolPause)?;
         env.storage()
             .persistent()
             .set(&DataKey::ScopedPause(scope), &paused);
@@ -511,7 +647,7 @@ impl ProtocolConfigContract {
     ) -> Result<(), ContractError> {
         Self::ensure_not_decommissioned(&env)?;
         let admin = Self::get_admin(env.clone())?;
-        Self::require_auth(&admin);
+        Self::require_role_or_admin(&env, &admin, GovernanceRole::SchemaManagement)?;
         Self::ensure_nonzero_version(version)?;
         Self::consume_proposal(&env, &proposal_id)?;
         env.storage()
@@ -539,7 +675,7 @@ impl ProtocolConfigContract {
     ) -> Result<(), ContractError> {
         Self::ensure_not_decommissioned(&env)?;
         let admin = Self::get_admin(env.clone())?;
-        Self::require_auth(&admin);
+        Self::require_role_or_admin(&env, &admin, GovernanceRole::SchemaManagement)?;
         Self::ensure_nonzero_version(version)?;
         let key = DataKey::SchemaVersion(version);
         if !env.storage().persistent().has(&key) {
@@ -997,6 +1133,28 @@ impl ProtocolConfigContract {
     fn require_auth(address: &Address) {
         address.require_auth();
     }
+
+    fn require_role_or_admin(
+        env: &Env,
+        actor: &Address,
+        role: GovernanceRole,
+    ) -> Result<(), ContractError> {
+        if actor == &Self::get_admin(env.clone())? {
+            actor.require_auth();
+            return Ok(());
+        }
+        let key = DataKey::GovernanceAssignment(role, actor.clone());
+        let assignment: GovernanceRoleAssignment = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ContractError::Unauthorized)?;
+        if !assignment.is_active_at(env.ledger().sequence()) {
+            return Err(ContractError::Unauthorized);
+        }
+        actor.require_auth();
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1004,8 +1162,13 @@ mod test {
     extern crate std;
 
     use super::{DataKey, ProtocolConfigContract, ProtocolConfigContractClient};
-    use earnproof_shared::{ConfigChangeCategory, TTL_THRESHOLD_LEDGERS};
-    use soroban_sdk::{testutils::storage::Persistent as _, Address, BytesN, Env};
+    use earnproof_shared::{
+        ConfigChangeCategory, ContractError, GovernanceRole, TTL_THRESHOLD_LEDGERS,
+    };
+    use soroban_sdk::{
+        testutils::{storage::Persistent as _, Address as _, Ledger as _},
+        Address, BytesN, Env,
+    };
 
     const ADMIN: &str = "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR";
     const OTHER: &str = "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U";
@@ -2100,6 +2263,91 @@ mod test {
 
         assert_eq!(client.get_config_history_cursor(), cursor_before);
         assert_eq!(client.get_config_history(&0, &10).len(), cursor_before);
+    }
+
+    #[test]
+    fn governance_role_expires_at_boundary_and_removal_is_immediate() {
+        let (env, client, _admin) = setup();
+        let delegate = Address::generate(&env);
+        let activation = env.ledger().sequence();
+        let expiration = activation + 2;
+        client.grant_governance_role(
+            &p(&env, 0xC1),
+            &GovernanceRole::ProtocolPause,
+            &delegate,
+            &activation,
+            &Some(expiration),
+        );
+        let assignment = client
+            .get_governance_assignment(&GovernanceRole::ProtocolPause, &delegate)
+            .unwrap();
+        assert!(assignment.is_active_at(activation));
+        assert!(!assignment.is_active_at(expiration));
+        client.pause_by_role(&p(&env, 0xC2), &delegate);
+
+        env.ledger()
+            .with_mut(|ledger| ledger.sequence_number = expiration);
+        assert_eq!(
+            client.try_pause_by_role(&p(&env, 0xC3), &delegate),
+            Err(Ok(ContractError::Unauthorized))
+        );
+        client.remove_governance_role(&GovernanceRole::ProtocolPause, &delegate);
+        assert!(client
+            .get_governance_assignment(&GovernanceRole::ProtocolPause, &delegate)
+            .is_none());
+    }
+
+    #[test]
+    fn overlapping_roles_can_be_renewed_and_survive_migration() {
+        let (env, client, _admin) = setup();
+        let first_delegate = Address::generate(&env);
+        let second_delegate = Address::generate(&env);
+        let now = env.ledger().sequence();
+        client.grant_governance_role(
+            &p(&env, 0xC4),
+            &GovernanceRole::ProtocolPause,
+            &first_delegate,
+            &(now + 1),
+            &Some(now + 6),
+        );
+        client.grant_governance_role(
+            &p(&env, 0xC5),
+            &GovernanceRole::ProtocolPause,
+            &second_delegate,
+            &(now + 3),
+            &Some(now + 8),
+        );
+        env.ledger()
+            .with_mut(|ledger| ledger.sequence_number = now + 4);
+        assert!(client
+            .get_governance_assignment(&GovernanceRole::ProtocolPause, &first_delegate)
+            .unwrap()
+            .is_active_at(now + 4));
+        assert!(client
+            .get_governance_assignment(&GovernanceRole::ProtocolPause, &second_delegate)
+            .unwrap()
+            .is_active_at(now + 4));
+
+        client.grant_governance_role(
+            &p(&env, 0xC6),
+            &GovernanceRole::ProtocolPause,
+            &first_delegate,
+            &(now + 4),
+            &Some(now + 10),
+        );
+        let renewed = client
+            .get_governance_assignment(&GovernanceRole::ProtocolPause, &first_delegate)
+            .unwrap();
+        assert_eq!(renewed.expiration_ledger, Some(now + 10));
+
+        client.begin_migration(&2, &1);
+        client.advance_migration(&0, &1);
+        assert_eq!(
+            client
+                .get_governance_assignment(&GovernanceRole::ProtocolPause, &first_delegate)
+                .unwrap(),
+            renewed
+        );
     }
 
     /// Test-only helper mirroring the contract's private `commit` so the

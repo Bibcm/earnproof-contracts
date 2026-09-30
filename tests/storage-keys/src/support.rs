@@ -302,13 +302,28 @@ pub fn exercised_deployment() -> Deployment {
     config.unpause(&bytes32(&env, 0x14));
     config.nominate_admin(&rotated_admin);
     config.accept_admin();
+    config.grant_governance_role(
+        &bytes32(&env, 0x20),
+        &earnproof_shared::GovernanceRole::ProtocolPause,
+        &Address::generate(&env),
+        &env.ledger().sequence(),
+        &None,
+    );
 
     let issuers_id = env.register(IssuerRegistryContract, ());
     let issuers = IssuerRegistryContractClient::new(&env, &issuers_id);
     issuers.initialize(&admin);
+    issuers.grant_governance_role(
+        &bytes32(&env, 0x21),
+        &earnproof_shared::GovernanceRole::IssuerManagement,
+        &Address::generate(&env),
+        &env.ledger().sequence(),
+        &None,
+    );
     issuers.register_issuer(&issuer_id, &issuer, &bytes32(&env, 2), &bytes32(&env, 99));
     issuers.update_issuer(&issuer_id, &bytes32(&env, 3));
     issuers.rotate_issuer_address(&issuer_id, &rotated_issuer);
+    issuers.accept_issuer_address_rotation(&issuer_id);
     issuers.register_issuer(
         &bytes32(&env, 10),
         &suspended_issuer,
@@ -325,6 +340,7 @@ pub fn exercised_deployment() -> Deployment {
         &bytes32(&env, 10),
         &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
     );
+    issuers.rotate_issuer_address(&bytes32(&env, 10), &Address::generate(&env));
     issuers.register_issuer(
         &bytes32(&env, 20),
         &revoked_issuer,
@@ -351,6 +367,21 @@ pub fn exercised_deployment() -> Deployment {
     let proofs_id = env.register(ProofRegistryContract, ());
     let proofs = ProofRegistryContractClient::new(&env, &proofs_id);
     proofs.initialize(&admin, &issuers_id, &config_id);
+    proofs.grant_governance_role(
+        &bytes32(&env, 0x22),
+        &earnproof_shared::GovernanceRole::ProofAdministration,
+        &Address::generate(&env),
+        &env.ledger().sequence(),
+        &None,
+    );
+    let dependency_proposal = bytes32(&env, 0x23);
+    proofs.propose_dependency_replacement(
+        &dependency_proposal,
+        &issuers_id,
+        &config_id,
+        &(env.ledger().sequence() + 100),
+    );
+    proofs.activate_dependency_replacement(&dependency_proposal);
     proofs.register_proof(
         &proof_id,
         &bytes32(&env, 6),

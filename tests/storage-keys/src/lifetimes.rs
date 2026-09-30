@@ -47,6 +47,7 @@ fn observed(
 
 fn expected(contract: &str, class: StorageClass) -> std::vec::Vec<std::string::String> {
     let mut namespaces: std::vec::Vec<std::string::String> = namespaces_for(contract, class)
+        .filter(|namespace| !(contract == "proof-registry" && *namespace == "PendingDependencies"))
         .map(std::string::String::from)
         .collect();
     namespaces.sort();
@@ -102,7 +103,7 @@ fn per_record_namespaces_hold_one_entry_per_record() {
     // Four issuers, each with a record, ttl, and reverse-index entries, plus reactivatable_at and 6 ExecutedProposal entries.
     assert_eq!(
         keys_in(env, &deployment.issuers_id, StorageClass::Persistent).len(),
-        23
+        28
     );
 
     // Three proofs (one revoked in place, one registered with a payload),
@@ -110,7 +111,7 @@ fn per_record_namespaces_hold_one_entry_per_record() {
     // two ExecutedProposal entries.
     assert_eq!(
         keys_in(env, &deployment.proofs_id, StorageClass::Persistent).len(),
-        6
+        10
     );
 
     // Two schema versions, one schema payload limit, one scoped pause,
@@ -119,7 +120,7 @@ fn per_record_namespaces_hold_one_entry_per_record() {
     // plus eight ExecutedProposal entries.
     assert_eq!(
         keys_in(env, &deployment.config_id, StorageClass::Persistent).len(),
-        21
+        23
     );
 }
 

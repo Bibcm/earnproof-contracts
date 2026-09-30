@@ -54,6 +54,7 @@ export interface IssuerRecord {
 export interface ProofRecord {
   proof_id_hash: string; // BytesN<32> as hex string
   commitment_hash: string; // BytesN<32> as hex string
+  disclosure_policy_hash: string; // BytesN<32> as hex string; zero means legacy/unset
   issuer_address: string; // Stellar address
   status: ProofStatus;
   schema_version: number; // u32
@@ -365,6 +366,11 @@ export interface RegisterProofParams {
  * Return type: void
  */
 export type RegisterProofResult = void;
+
+/** Parameters for proof_registry::register_proof_with_policy */
+export interface RegisterProofWithPolicyParams extends RegisterProofParams {
+  disclosure_policy_hash: string; // Nonzero BytesN<32> policy commitment
+}
 
 /**
  * Parameters for proof_registry::revoke_proof
