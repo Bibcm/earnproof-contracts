@@ -155,7 +155,7 @@ pub struct ErrorSpec {
 }
 
 /// Every published error, ordered by code.
-pub const ERROR_CATALOG: [ErrorSpec; 25] = [
+pub const ERROR_CATALOG: [ErrorSpec; 30] = [
     ErrorSpec {
         code: 1,
         name: "AlreadyInitialized",
@@ -383,6 +383,18 @@ pub const ERROR_CATALOG: [ErrorSpec; 25] = [
         remediation: "Wait until the ledger time returned by get_earliest_reactivation before retrying. The deadline is fixed at suspension time and does not move.",
         http_status: 400,
         client_message: "Reactivation cooldown has not elapsed",
+    },
+    ErrorSpec {
+        code: 211,
+        name: "InvalidMetadataCommitment",
+        enum_name: "IssuerError",
+        domain: Domain::IssuerRegistry,
+        status: Status::Returned,
+        cause: "set_issuer_metadata_commitment was given an all-zero metadata or URI commitment.",
+        retry: Retry::AfterCallerChange,
+        remediation: "Supply nonzero SHA-256 commitments computed from the documented canonical bytes.",
+        http_status: 400,
+        client_message: "Invalid metadata commitment",
     },
     ErrorSpec {
         code: 300,

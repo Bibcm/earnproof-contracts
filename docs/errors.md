@@ -98,6 +98,7 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 | 208 | `IssuerCapacityExceeded` | `IssuerError` | issuer-registry | returned | after-operator-action | 409 |
 | 209 | `MaxBelowActiveUsage` | `IssuerError` | issuer-registry | returned | after-caller-change | 400 |
 | 210 | `ReactivationCooldownActive` | `IssuerError` | issuer-registry | returned | after-caller-change | 400 |
+| 211 | `InvalidMetadataCommitment` | `IssuerError` | issuer-registry | returned | after-caller-change | 400 |
 | 300 | `ProofAlreadyRegistered` | `ProofError` | proof-registry | returned | never | 409 |
 | 301 | `ProofNotFound` | `ProofError` | proof-registry | returned | after-caller-change | 404 |
 | 302 | `ProofAlreadyRevoked` | `ProofError` | proof-registry | returned | never | 400 |
@@ -319,6 +320,17 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 - Remediation: Wait until the ledger time returned by get_earliest_reactivation before retrying. The deadline is fixed at suspension time and does not move.
 - Suggested HTTP status: 400
 - Client message: "Reactivation cooldown has not elapsed"
+
+### 211 - `InvalidMetadataCommitment`
+
+- Enum: `IssuerError`
+- Domain: issuer-registry
+- Status: returned
+- Retry: after-caller-change
+- Cause: set_issuer_metadata_commitment was given an all-zero metadata or URI commitment.
+- Remediation: Supply nonzero SHA-256 commitments computed from the documented canonical bytes.
+- Suggested HTTP status: 400
+- Client message: "Invalid metadata commitment"
 
 ### 300 - `ProofAlreadyRegistered`
 

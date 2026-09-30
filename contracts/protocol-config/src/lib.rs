@@ -1,9 +1,13 @@
 #![no_std]
 
 use earnproof_shared::{
-    ConfigChangeCategory, ConfigChangeSummary, ContractError, GenesisRecord, MigrationStatus,
-    PauseScope, CONFIG_HISTORY_CAPACITY, DEFAULT_SCHEMA_PAYLOAD_LIMIT, MAX_CONFIG_HISTORY_PAGE,
-    MAX_MIGRATION_BATCH, MIGRATION_STATUS_VERSION, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
+    ConfigChangeCategory, ConfigChangeSummary, ContractError, GenesisRecord, InterfaceVersion,
+    MigrationStatus, PauseScope, SchemaPolicy, CONFIG_HISTORY_CAPACITY,
+    DEFAULT_SCHEMA_PAYLOAD_LIMIT,
+    LEGACY_PROOF_TYPE, MAX_CONFIG_HISTORY_PAGE, MAX_MIGRATION_BATCH, MAX_SCHEMA_PROOF_TYPES,
+    MAX_SCHEMA_VALIDITY_SECONDS, MIGRATION_STATUS_VERSION, SHA256_COMMITMENT_ALGORITHM_V1,
+    LEGACY_COMMITMENT_ALGORITHM, PROTOCOL_CONFIG_INTERFACE_VERSION, TTL_EXTEND_TO_LEDGERS,
+    TTL_THRESHOLD_LEDGERS,
 };
 use soroban_sdk::{
     contract, contractevent, contractimpl, contracttype, xdr::ToXdr, Address, BytesN, Env, Vec,
@@ -33,6 +37,10 @@ enum DataKey {
     Genesis,
     /// Governed per-schema-version auxiliary payload size bound (bytes).
     SchemaPayloadLimit(u32),
+    /// Governed proof-type and maximum-validity policy for a schema version.
+    SchemaPolicy(u32),
+    /// Whether a commitment algorithm identifier is available for new proofs.
+    CommitmentAlgorithm(u32),
     /// Ring-buffer slot holding one bounded change-history summary.
     ConfigHistoryRing(u32),
     /// Monotonic count of change-history entries ever appended.
@@ -115,6 +123,19 @@ pub struct ContractDecommissioned {
 pub struct SchemaPayloadLimitSet {
     pub version: u32,
     pub max_size: u32,
+}
+
+#[contractevent]
+pub struct SchemaPolicySet {
+    pub version: u32,
+    pub proof_type_count: u32,
+    pub max_validity_seconds: u64,
+}
+
+#[contractevent]
+pub struct CommitmentAlgorithmPolicySet {
+    pub algorithm: u32,
+    pub supported: bool,
 }
 
 // ── upgrade events ───────────────────────────────────────────────────────────
@@ -208,6 +229,21 @@ impl ProtocolConfigContract {
     }
 
     pub fn set_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_valid_principal(&new_admin)?;
+        Self::require_auth(&admin);
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        Self::bump_config_version(env.clone());
+        Self::append_config_history(
+            env.clone(),
+            ConfigChangeCategory::AdminRotation,
+            Self::commit(&env, new_admin.clone()),
+        );
+        AdminChanged { new_admin }.publish(&env);
+        Ok(())
+    }
+
     pub fn nominate_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
         Self::ensure_not_decommissioned(&env)?;
         let admin = Self::get_admin(env.clone())?;
@@ -243,9 +279,12 @@ impl ProtocolConfigContract {
         Self::append_config_history(
             env.clone(),
             ConfigChangeCategory::AdminRotation,
-            Self::commit(&env, new_admin.clone()),
+            Self::commit(&env, pending_admin.clone()),
         );
-        AdminChanged { new_admin }.publish(&env);
+        AdminChanged {
+            new_admin: pending_admin.clone(),
+        }
+        .publish(&env);
 
         AdminTransferAccepted {
             new_admin: pending_admin,
@@ -423,6 +462,19 @@ impl ProtocolConfigContract {
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
         Self::ensure_nonzero_version(version)?;
+        let policy_key = DataKey::SchemaPolicy(version);
+        if !env.storage().persistent().has(&policy_key) {
+            let mut proof_types = Vec::new(&env);
+            proof_types.push_back(LEGACY_PROOF_TYPE);
+            env.storage().persistent().set(
+                &policy_key,
+                &SchemaPolicy {
+                    proof_types,
+                    max_validity_seconds: MAX_SCHEMA_VALIDITY_SECONDS,
+                },
+            );
+            Self::extend_schema_policy_ttl(env.clone(), version);
+        }
         env.storage()
             .persistent()
             .set(&DataKey::SchemaVersion(version), &true);
@@ -507,6 +559,128 @@ impl ProtocolConfigContract {
         );
         SchemaPayloadLimitSet { version, max_size }.publish(&env);
         Ok(())
+    }
+
+    /// Admin-only: configure the proof types and maximum lifetime for a
+    /// schema version. A policy can only change while the schema is
+    /// deprecated, so existing approvals and proof records are never
+    /// reinterpreted by a live policy update.
+    pub fn set_schema_policy(
+        env: Env,
+        version: u32,
+        proof_types: Vec<u32>,
+        max_validity_seconds: u64,
+    ) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        Self::ensure_nonzero_version(version)?;
+        if env.storage().persistent().has(&DataKey::SchemaVersion(version))
+            || proof_types.is_empty()
+            || proof_types.len() > MAX_SCHEMA_PROOF_TYPES
+            || max_validity_seconds == 0
+            || max_validity_seconds > MAX_SCHEMA_VALIDITY_SECONDS
+        {
+            return Err(ContractError::InvalidInput);
+        }
+        let mut index = 0;
+        while index < proof_types.len() {
+            let value = proof_types.get(index).ok_or(ContractError::InvalidInput)?;
+            let mut prior = 0;
+            while prior < index {
+                if proof_types.get(prior) == Some(value) {
+                    return Err(ContractError::InvalidInput);
+                }
+                prior += 1;
+            }
+            index += 1;
+        }
+
+        let policy = SchemaPolicy {
+            proof_types: proof_types.clone(),
+            max_validity_seconds,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::SchemaPolicy(version), &policy);
+        Self::extend_schema_policy_ttl(env.clone(), version);
+        Self::bump_config_version(env.clone());
+        Self::append_config_history(
+            env.clone(),
+            ConfigChangeCategory::SchemaPolicy,
+            Self::commit(&env, (version, policy)),
+        );
+        SchemaPolicySet {
+            version,
+            proof_type_count: proof_types.len(),
+            max_validity_seconds,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Returns the configured policy. Schemas predating policy storage use a
+    /// compatibility policy for legacy registrations and the finite maximum
+    /// validity horizon.
+    pub fn get_schema_policy(env: Env, version: u32) -> SchemaPolicy {
+        if version == 0 {
+            return Self::legacy_schema_policy(&env);
+        }
+        let key = DataKey::SchemaPolicy(version);
+        let policy = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| Self::legacy_schema_policy(&env));
+        if env.storage().persistent().has(&key) {
+            Self::extend_schema_policy_ttl(env, version);
+        }
+        policy
+    }
+
+    /// Admin-only: enable or retire a supported commitment algorithm for new
+    /// registrations. Identifiers outside the published set are rejected.
+    pub fn set_commitment_algorithm(
+        env: Env,
+        algorithm: u32,
+        supported: bool,
+    ) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        if algorithm != LEGACY_COMMITMENT_ALGORITHM
+            && algorithm != SHA256_COMMITMENT_ALGORITHM_V1
+        {
+            return Err(ContractError::InvalidInput);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::CommitmentAlgorithm(algorithm), &supported);
+        Self::bump_config_version(env.clone());
+        Self::append_config_history(
+            env.clone(),
+            ConfigChangeCategory::CommitmentAlgorithmPolicy,
+            Self::commit(&env, (algorithm, supported)),
+        );
+        CommitmentAlgorithmPolicySet {
+            algorithm,
+            supported,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Returns whether an algorithm is enabled for new registrations. Both
+    /// published identifiers are enabled by default; unknown identifiers are
+    /// always rejected.
+    pub fn is_algorithm_supported(env: Env, algorithm: u32) -> bool {
+        if algorithm != LEGACY_COMMITMENT_ALGORITHM
+            && algorithm != SHA256_COMMITMENT_ALGORITHM_V1
+        {
+            return false;
+        }
+        let key = DataKey::CommitmentAlgorithm(algorithm);
+        env.storage().instance().get(&key).unwrap_or(true)
     }
 
     /// Returns the active payload-size bound for `version`: the governed
@@ -756,6 +930,23 @@ impl ProtocolConfigContract {
         );
     }
 
+    fn extend_schema_policy_ttl(env: Env, version: u32) {
+        env.storage().persistent().extend_ttl(
+            &DataKey::SchemaPolicy(version),
+            TTL_THRESHOLD_LEDGERS,
+            TTL_EXTEND_TO_LEDGERS,
+        );
+    }
+
+    fn legacy_schema_policy(env: &Env) -> SchemaPolicy {
+        let mut proof_types = Vec::new(env);
+        proof_types.push_back(LEGACY_PROOF_TYPE);
+        SchemaPolicy {
+            proof_types,
+            max_validity_seconds: MAX_SCHEMA_VALIDITY_SECONDS,
+        }
+    }
+
     /// SHA-256 commitment to an arbitrary XDR-encodable value. Used so
     /// change-history entries carry proof of what changed without carrying
     /// the value itself.
@@ -883,8 +1074,11 @@ mod test {
     extern crate std;
 
     use super::{DataKey, ProtocolConfigContract, ProtocolConfigContractClient};
-    use earnproof_shared::{ConfigChangeCategory, TTL_THRESHOLD_LEDGERS};
-    use soroban_sdk::{testutils::storage::Persistent as _, Address, BytesN, Env};
+    use earnproof_shared::{
+        ConfigChangeCategory, LEGACY_PROOF_TYPE, MAX_SCHEMA_PROOF_TYPES,
+        MAX_SCHEMA_VALIDITY_SECONDS, SHA256_COMMITMENT_ALGORITHM_V1, TTL_THRESHOLD_LEDGERS,
+    };
+    use soroban_sdk::{testutils::storage::Persistent as _, Address, BytesN, Env, Vec};
 
     const ADMIN: &str = "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR";
     const OTHER: &str = "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U";
@@ -1831,6 +2025,87 @@ mod test {
         client.set_schema_payload_limit(&1, &2_048);
         client.set_schema_payload_limit(&1, &16);
         assert_eq!(client.get_schema_payload_limit(&1), 16);
+    }
+
+    #[test]
+    fn legacy_schema_policy_has_finite_migration_default() {
+        let (_env, client, _admin) = setup();
+        let policy = client.get_schema_policy(&1);
+        assert_eq!(policy.proof_types.len(), 1);
+        assert_eq!(policy.proof_types.get(0), Some(LEGACY_PROOF_TYPE));
+        assert_eq!(policy.max_validity_seconds, MAX_SCHEMA_VALIDITY_SECONDS);
+    }
+
+    #[test]
+    fn schema_policy_is_immutable_after_approval_and_is_bounded() {
+        let (env, client, _admin) = setup();
+        let mut types = Vec::new(&env);
+        types.push_back(7);
+        types.push_back(9);
+        client.set_schema_policy(&1, &types, &120);
+        client.approve_schema_version(&1);
+        assert_eq!(client.get_schema_policy(&1).proof_types, types);
+
+        let mut changed_types = Vec::new(&env);
+        changed_types.push_back(11);
+        assert!(client
+            .try_set_schema_policy(&1, &changed_types, &240)
+            .is_err());
+
+        client.deprecate_schema_version(&1);
+        assert!(client
+            .try_set_schema_policy(&1, &changed_types, &240)
+            .is_err());
+        assert_eq!(client.get_schema_policy(&1).proof_types, types);
+
+        client.set_schema_policy(&2, &changed_types, &240);
+        client.approve_schema_version(&2);
+        assert_eq!(client.get_schema_policy(&2).proof_types, changed_types);
+
+        let empty = Vec::new(&env);
+        assert!(client.try_set_schema_policy(&3, &empty, &1).is_err());
+        let mut oversized = Vec::new(&env);
+        for proof_type in 0..=MAX_SCHEMA_PROOF_TYPES {
+            oversized.push_back(proof_type);
+        }
+        assert!(client
+            .try_set_schema_policy(&3, &oversized, &1)
+            .is_err());
+        assert!(client.try_set_schema_policy(&3, &changed_types, &0).is_err());
+        assert!(client
+            .try_set_schema_policy(&3, &changed_types, &(MAX_SCHEMA_VALIDITY_SECONDS + 1))
+            .is_err());
+    }
+
+    #[test]
+    fn commitment_algorithm_can_be_retired_and_unknown_ids_are_rejected() {
+        let (_env, client, _admin) = setup();
+        assert!(client.is_algorithm_supported(&0));
+        assert!(client.is_algorithm_supported(&SHA256_COMMITMENT_ALGORITHM_V1));
+        assert!(!client.is_algorithm_supported(&u32::MAX));
+        client.set_commitment_algorithm(&SHA256_COMMITMENT_ALGORITHM_V1, &false);
+        assert!(!client.is_algorithm_supported(&SHA256_COMMITMENT_ALGORITHM_V1));
+        assert!(client
+            .try_set_commitment_algorithm(&u32::MAX, &true)
+            .is_err());
+    }
+
+    #[test]
+    #[should_panic]
+    fn commitment_algorithm_policy_requires_admin_authorization() {
+        let (env, client, _admin) = setup();
+        env.set_auths(&[]);
+        client.set_commitment_algorithm(&SHA256_COMMITMENT_ALGORITHM_V1, &false);
+    }
+
+    #[test]
+    #[should_panic]
+    fn schema_policy_requires_admin_authorization() {
+        let (env, client, _admin) = setup();
+        let mut types = Vec::new(&env);
+        types.push_back(1);
+        env.set_auths(&[]);
+        client.set_schema_policy(&1, &types, &120);
     }
 
     // ── bounded configuration change history (issue #193) ────────────────────

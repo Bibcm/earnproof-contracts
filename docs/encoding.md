@@ -12,4 +12,27 @@ The canonical fixture is [vectors.json](../tests/fixtures/encoding/vectors.json)
 - `schema_version` is an unsigned 32-bit integer encoded big-endian when serialized outside Soroban. `expiration` is an unsigned 64-bit ledger timestamp, also big-endian. No signed, little-endian, truncated, or overflowing value is valid.
 - `BytesN<32>` is the digest bytes, not the ASCII bytes of its hexadecimal display.
 
+## Proof commitment algorithms
+
+The algorithm identifier is stored with each proof and is never inferred from
+the current protocol policy:
+
+| ID | Binding name | Commitment bytes |
+| --- | --- | --- |
+| `0` | `LegacySha256` | `SHA-256(canonical_payload_bytes)`; preserves the existing unprefixed interpretation. |
+| `1` | `Sha256CanonicalV1` | `SHA-256("earnproof:proof-commitment:v1" || 0x00 || canonical_payload_bytes)`. |
+
+The schema codec defines `canonical_payload_bytes`; the proof registry stores
+the caller-supplied digest and algorithm ID but never stores or hashes the raw
+credential. The `tests/encoding` known vectors pin both byte constructions.
+Protocol governance may retire an ID for new registrations without changing
+the interpretation of existing records.
+
+Schema policy uses stable unsigned 32-bit proof-type IDs. ID `0` is reserved
+for calls through the original registration functions. A schema policy is a
+non-empty list of at most 16 IDs and a maximum validity duration from 1 through
+3,153,600,000 seconds. Updating a policy requires deprecating that schema
+version first, then approving it again; each proof retains its registration
+snapshot.
+
 The fixtures contain synthetic values only. They must never be updated with wallets, credentials, secrets, deployment identifiers, income, or payment history. Run `cargo test -p encoding-vector-tests` after changing them and update the independent TypeScript example in `tests/fixtures/encoding/example.ts`.

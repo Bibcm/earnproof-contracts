@@ -69,6 +69,25 @@ pub const GENESIS_ID_VERSION: u32 = 1;
 /// version that has no explicit override configured in protocol-config.
 pub const DEFAULT_SCHEMA_PAYLOAD_LIMIT: u32 = 4096;
 
+/// Maximum validity duration that protocol governance may assign to a schema.
+/// The finite cap also bounds horizons for schemas migrated without an
+/// explicit policy.
+pub const MAX_SCHEMA_VALIDITY_SECONDS: u64 = 3_153_600_000;
+
+/// A schema policy is deliberately small so its storage and read cost stay
+/// bounded independently of caller input.
+pub const MAX_SCHEMA_PROOF_TYPES: u32 = 16;
+
+/// Compatibility proof type used by registrations made through the original
+/// proof-registry entrypoints and by schemas without an explicit policy.
+pub const LEGACY_PROOF_TYPE: u32 = 0;
+
+/// Stable commitment algorithm identifiers. Version 0 preserves the historic
+/// opaque-hash interpretation; version 1 is SHA-256 over canonical payload
+/// bytes supplied by the issuer.
+pub const LEGACY_COMMITMENT_ALGORITHM: u32 = 0;
+pub const SHA256_COMMITMENT_ALGORITHM_V1: u32 = 1;
+
 /// Computes a deterministic, domain-separated genesis identifier for a
 /// contract instance.
 ///
@@ -114,6 +133,26 @@ pub struct ProofPayloadRecord {
     pub payload_len: u32,
     /// SHA-256 hash of the auxiliary payload.
     pub payload_hash: BytesN<32>,
+}
+
+/// Per-schema registration policy. Proof-type identifiers are stable numeric
+/// values defined by the integrating application; the legacy identifier `0`
+/// is reserved for the original registration API.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchemaPolicy {
+    pub proof_types: soroban_sdk::Vec<u32>,
+    pub max_validity_seconds: u64,
+}
+
+/// Immutable registration metadata kept separately from `ProofRecord` so
+/// existing persisted proof records remain decodable across upgrades.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProofPolicySnapshot {
+    pub proof_type: u32,
+    pub commitment_algorithm: u32,
+    pub max_validity_seconds: u64,
 }
 
 pub fn protocol_config_digest(
@@ -276,7 +315,7 @@ impl InterfaceVersion {
 pub const ISSUER_REGISTRY_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 0, 0);
 
 /// The interface version implemented by `protocol-config`.
-pub const PROTOCOL_CONFIG_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 0, 0);
+pub const PROTOCOL_CONFIG_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 1, 0);
 
 /// Returns true when `actual` is compatible with the `required` minimum.
 ///
@@ -364,7 +403,7 @@ pub enum IssuerError {
     IssuerInactive = 205,
     InvalidTransition = 206,
     InvalidAddress = 207,
-    InvalidMetadataCommitment = 208,
+    InvalidMetadataCommitment = 211,
     /// Registering or reactivating this issuer would exceed the governed
     /// maximum active-issuer capacity.
     IssuerCapacityExceeded = 208,
@@ -429,6 +468,8 @@ pub enum ConfigChangeCategory {
     SchemaApproval,
     SchemaDeprecation,
     SchemaPayloadLimit,
+    SchemaPolicy,
+    CommitmentAlgorithmPolicy,
 }
 
 /// One bounded, on-chain summary of a governance change, as stored in the
@@ -499,6 +540,8 @@ pub enum ProofValidity {
     Expired,
     IssuerInactive,
     SchemaDeprecated,
+}
+
 /// Stores temporal metadata for an upgrade approval.
 ///
 /// # Timing invariants

@@ -295,6 +295,8 @@ impl IssuerRegistryContract {
             .instance()
             .get(&DataKey::Genesis)
             .ok_or(ContractError::NotInitialized)
+    }
+
     pub fn nominate_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
         Self::ensure_not_decommissioned(&env).map_err(|_| ContractError::InvalidState)?;
         let admin = Self::get_admin(env.clone())?;
@@ -2609,6 +2611,8 @@ mod test {
 
         let result = client.try_get_genesis();
         assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
+    }
+
     // ── issuer metadata URI hash commitments (issue 179) ───────────────────────
 
     #[test]
