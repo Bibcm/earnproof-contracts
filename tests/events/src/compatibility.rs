@@ -21,6 +21,7 @@ use soroban_sdk::{Address, Env, Symbol, TryFromVal, Val};
 const DECLARED_EVENTS: &[(&str, &[&str])] = &[
     // protocol-config
     ("initialized", &["admin"]),
+    ("admin_changed", &["new_admin"]),
     (
         "admin_transfer_nominated",
         &["pending_admin", "nominated_by"],
@@ -56,6 +57,7 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
             "metadata_uri_hash",
             "metadata_revision",
             "updated_at",
+            "epoch",
         ],
     ),
     (
@@ -65,6 +67,7 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
             "effective_ledger",
             "effective_timestamp",
             "updated_at",
+            "epoch",
         ],
     ),
     (
@@ -74,6 +77,7 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
             "effective_ledger",
             "effective_timestamp",
             "updated_at",
+            "epoch",
         ],
     ),
     (
@@ -83,19 +87,9 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
             "effective_ledger",
             "effective_timestamp",
             "updated_at",
+            "epoch",
         ],
     ),
-        &["issuer_id_hash", "metadata_hash", "updated_at", "epoch"],
-    ),
-    (
-        "issuer_suspended",
-        &["issuer_id_hash", "updated_at", "epoch"],
-    ),
-    (
-        "issuer_reactivated",
-        &["issuer_id_hash", "updated_at", "epoch"],
-    ),
-    ("issuer_revoked", &["issuer_id_hash", "updated_at", "epoch"]),
     (
         "issuer_address_rotated",
         &[
@@ -107,19 +101,11 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
         ],
     ),
     // proof-registry
-    (
-        "proof_registered",
-        &[
-            "proof_id_hash",
-            "issuer_address",
-            "schema_version",
-            "created_ledger",
-            "created_at",
-            "expires_at",
-        ],
-    ),
-    // proof-registry
     ("proof_registered", &["proof_id_hash", "epoch"]),
+    (
+        "proof_registered_with_payload",
+        &["proof_id_hash", "payload_len", "payload_hash", "epoch"],
+    ),
     ("proof_revoked", &["proof_id_hash", "by_admin", "epoch"]),
 ];
 
