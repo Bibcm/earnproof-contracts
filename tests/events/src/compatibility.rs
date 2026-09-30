@@ -24,16 +24,115 @@ use crate::harness::{authorize, hash, issuer_id_hash, Deployment, APPROVED_SCHEM
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{Address, IntoVal, Val};
 
-/// The identity attempting the call.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Identity {
-    /// No authorization entry at all.
-    Missing,
-    /// An authorization entry signed by an address that is not the documented
-    /// authority for this entry point.
-    Wrong,
-    /// The documented authority signs (control case).
-    Authorized,
+/// Every topic the fixtures declare, with the payload fields they promise.
+///
+/// Mirrors `tests/fixtures/events/*/v1/*.json`. Changing either side without
+/// the other fails a test here, which is the point: the fixture is the
+/// published contract and the emission is the implementation.
+const DECLARED_EVENTS: &[(&str, &[&str])] = &[
+    // protocol-config
+    ("initialized", &["admin"]),
+    ("admin_changed", &["new_admin"]),
+    (
+        "admin_transfer_nominated",
+        &["pending_admin", "nominated_by"],
+    ),
+    ("admin_transfer_accepted", &["new_admin"]),
+    (
+        "admin_transfer_cancelled",
+        &["pending_admin", "cancelled_by"],
+    ),
+    ("paused", &["paused"]),
+    ("unpaused", &["paused"]),
+    ("schema_approved", &["version"]),
+    ("schema_deprecated", &["version"]),
+    // issuer-registry
+    (
+        "issuer_registered",
+        &[
+            "issuer_id_hash",
+            "issuer_address",
+            "metadata_hash",
+            "metadata_uri_hash",
+            "metadata_revision",
+            "provenance_commitment",
+            "created_at",
+            "epoch",
+        ],
+    ),
+    (
+        "issuer_metadata_updated",
+        &[
+            "issuer_id_hash",
+            "metadata_hash",
+            "metadata_uri_hash",
+            "metadata_revision",
+            "updated_at",
+            "epoch",
+        ],
+    ),
+    (
+        "issuer_suspended",
+        &[
+            "issuer_id_hash",
+            "effective_ledger",
+            "effective_timestamp",
+            "updated_at",
+            "epoch",
+        ],
+    ),
+    (
+        "issuer_reactivated",
+        &[
+            "issuer_id_hash",
+            "effective_ledger",
+            "effective_timestamp",
+            "updated_at",
+            "epoch",
+        ],
+    ),
+    (
+        "issuer_revoked",
+        &[
+            "issuer_id_hash",
+            "effective_ledger",
+            "effective_timestamp",
+            "updated_at",
+            "epoch",
+        ],
+    ),
+    (
+        "issuer_address_rotated",
+        &[
+            "issuer_id_hash",
+            "old_address",
+            "new_address",
+            "updated_at",
+            "epoch",
+        ],
+    ),
+    // proof-registry
+    ("proof_registered", &["proof_id_hash", "epoch"]),
+    (
+        "proof_registered_with_payload",
+        &["proof_id_hash", "payload_len", "payload_hash", "epoch"],
+    ),
+    ("proof_revoked", &["proof_id_hash", "by_admin", "epoch"]),
+];
+
+/// Looks up the declared payload fields for a topic.
+fn declared_fields(topic: &str) -> &'static [&'static str] {
+    DECLARED_EVENTS
+        .iter()
+        .find(|(name, _)| *name == topic)
+        .map(|(_, fields)| *fields)
+        .unwrap_or_else(|| {
+            std::panic!(
+                "topic {topic} is emitted but not declared in DECLARED_EVENTS \
+                 or tests/fixtures/events/; an undeclared event is an \
+                 undocumented compatibility surface"
+            )
+        })
 }
 
 /// One row of the authorization matrix.

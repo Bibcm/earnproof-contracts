@@ -1,7 +1,7 @@
 # scenario: initialized
-# revision: 9
-# reason: merge upstream/develop: address rotation/revocation reasons, governance proposal ids, and timelock/upgrade-governance additions (round 2 conflict resolution)
-# body-digest: afa19b41ac87f026620231aeffbeef3252e8815e36c3f392fae4e32aebf22929
+# revision: 10
+# reason: Regenerate after merging develop's issuer-epoch/capacity fields into PR 237
+# body-digest: cf85e069bd9c38779f3c20bde5b41faa5521d65c5215ec99ac3dadf232ef0dd7
 
 [ledger]
 sequence = 1000
@@ -20,9 +20,7 @@ proof-registry instance [sym:Admin] = addr:admin
 proof-registry instance [sym:ContractVersion] = u32:1
 proof-registry instance [sym:Genesis] = {sym:genesis_id: bytes:87d5e19ffff41ef394bed747f4ca4dcdcbf818cec54eb466639248eb14dc82cd, sym:initialized_at_ledger: u32:1000}
 proof-registry instance [sym:InstanceLiveUntil] = u32:501000
-proof-registry instance [sym:IssuerRegistryVersion] = u32:1
 proof-registry instance [sym:IssuerRegistry] = addr:issuer-registry
-proof-registry instance [sym:ProtocolConfigVersion] = u32:1
 proof-registry instance [sym:ProtocolConfig] = addr:protocol-config
 proof-registry instance [sym:RegistryEpoch] = u32:0
 protocol-config instance [sym:Admin] = addr:admin
@@ -30,11 +28,8 @@ protocol-config instance [sym:ConfigHistoryTotal] = u32:1
 protocol-config instance [sym:ConfigVersion] = u32:2
 protocol-config instance [sym:ContractVersion] = u32:1
 protocol-config instance [sym:Genesis] = {sym:genesis_id: bytes:fc884b881dd72470b277e7f17051834343fce924e5328f844966e438d3a07cd3, sym:initialized_at_ledger: u32:1000}
-protocol-config instance [sym:InstanceLiveUntil] = u32:501000
 protocol-config instance [sym:Paused] = false
 protocol-config persistent [sym:ConfigHistoryRing, u32:0] = {sym:category: [sym:SchemaApproval], sym:config_version: u32:2, sym:ledger: u32:1000, sym:proposal_commitment: bytes:8f88362ee8034de8dfd2d681d099066cada58b40ee0bbbc2321309d0b4f4d43f, sym:timestamp: u64:1000}
-protocol-config persistent [sym:SchemaRecord, u32:1] = {sym:activated_at: u64:1000, sym:deprecated_at: u64:0, sym:is_approved: true, sym:metadata_hash: bytes:0101010101010101010101010101010101010101010101010101010101010101, sym:version: u32:1}
-protocol-config persistent [sym:SchemaTtl, u32:1] = u32:501000
 protocol-config persistent [sym:SchemaVersion, u32:1] = true
 
 [events]

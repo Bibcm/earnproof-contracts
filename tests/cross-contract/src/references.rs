@@ -42,7 +42,7 @@ fn fixtures() -> (Env, Address, Address, BytesN<32>, Address, Address) {
     let issuers = IssuerRegistryContractClient::new(&env, &issuers_id);
     issuers.initialize(&admin);
     let issuer_id = hash(&env, 0x01);
-    issuers.register_issuer(&issuer_id, &issuer, &hash(&env, 0xAA), &hash(&env, 0xBB));
+    issuers.register_issuer(&issuer_id, &issuer, &hash(&env, 0xAA), &hash(&env, 0xAB));
 
     (env, admin, issuer, issuer_id, issuers_id, config_id)
 }
@@ -162,10 +162,7 @@ fn an_uninitialized_protocol_config_fails_closed() {
 
     let rejection = deployment.assert_rejected_and_atomic(&hash(&deployment.env, 0xA5));
 
-    assert_eq!(
-        rejection,
-        Rejection::Typed(ProofError::SchemaVersionNotApproved)
-    );
+    assert_eq!(rejection, Rejection::Typed(ProofError::UnsupportedSchema));
 }
 
 #[test]

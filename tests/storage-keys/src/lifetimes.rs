@@ -104,15 +104,14 @@ fn per_record_namespaces_hold_one_entry_per_record() {
     // address replaces the old index entry rather than adding to it, so the
     // count is twelve including one TTL tracker for every record and reverse
     // index; the rotated address and its tracker replace their old entries.
-    // Three issuers (records + TTL trackers + address entries + TTL trackers) plus allowed WASM, upgrade history, upgrade approval metadata.
     assert_eq!(
         keys_in(env, &deployment.issuers_id, StorageClass::Persistent).len(),
-        22
+        12
     );
 
     assert_eq!(
         keys_in(env, &deployment.proofs_id, StorageClass::Persistent).len(),
-        13
+        16
     );
 
     // Two schema versions, one scoped pause, one schema payload limit, and
@@ -120,7 +119,7 @@ fn per_record_namespaces_hold_one_entry_per_record() {
     // history, and upgrade approval metadata entries exercised below.
     assert_eq!(
         keys_in(env, &deployment.config_id, StorageClass::Persistent).len(),
-        23
+        13
     );
 }
 
@@ -165,3 +164,4 @@ fn a_namespace_stays_in_one_durability_class() {
         }
     }
 }
+

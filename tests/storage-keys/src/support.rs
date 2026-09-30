@@ -76,17 +76,17 @@ pub fn protocol_config_version_key(env: &Env) -> (Symbol,) {
 }
 
 #[allow(dead_code)]
+pub fn issuer_registry_version_key(env: &Env) -> (Symbol,) {
+    (Symbol::new(env, "IssuerRegistryVersion"),)
+}
+
+#[allow(dead_code)]
 pub fn schema_ttl_key(env: &Env, version: u32) -> (Symbol, u32) {
     (Symbol::new(env, "SchemaTtl"), version)
 }
 
 pub fn issuer_registry_key(env: &Env) -> (Symbol,) {
     (Symbol::new(env, "IssuerRegistry"),)
-}
-
-#[allow(dead_code)]
-pub fn issuer_registry_version_key(env: &Env) -> (Symbol,) {
-    (Symbol::new(env, "IssuerRegistryVersion"),)
 }
 
 pub fn protocol_config_key(env: &Env) -> (Symbol,) {
@@ -138,11 +138,6 @@ pub fn reactivation_cooldown_key(env: &Env) -> (Symbol,) {
 }
 
 #[allow(dead_code)]
-pub fn reactivatable_at_key(env: &Env, id: &BytesN<32>) -> (Symbol, BytesN<32>) {
-    (Symbol::new(env, "ReactivatableAt"), id.clone())
-}
-
-#[allow(dead_code)]
 pub fn proof_payload_meta_key(env: &Env, id: &BytesN<32>) -> (Symbol, BytesN<32>) {
     (Symbol::new(env, "ProofPayloadMeta"), id.clone())
 }
@@ -161,9 +156,20 @@ pub fn config_history_ring_key(env: &Env, slot: u32) -> (Symbol, u32) {
     (Symbol::new(env, "ConfigHistoryRing"), slot)
 }
 
-#[allow(dead_code)]
 pub fn proof_ttl_key(env: &Env, id: &BytesN<32>) -> (Symbol, BytesN<32>) {
     (Symbol::new(env, "ProofTtl"), id.clone())
+}
+
+pub fn issuer_active_proof_count_key(env: &Env, issuer: &Address) -> (Symbol, Address) {
+    (Symbol::new(env, "IssuerActiveProofCount"), issuer.clone())
+}
+
+pub fn issuer_lifetime_proof_count_key(env: &Env, issuer: &Address) -> (Symbol, Address) {
+    (Symbol::new(env, "IssuerLifetimeProofCount"), issuer.clone())
+}
+
+pub fn schema_rate_usage_key(env: &Env, schema: u32, start: u32) -> (Symbol, u32, u32) {
+    (Symbol::new(env, "SchemaRateUsage"), schema, start)
 }
 
 // ---------------------------------------------------------------------------
@@ -288,19 +294,8 @@ pub fn exercised_deployment() -> Deployment {
     config.set_schema_payload_limit(&1, &2_048);
     config.pause();
     config.unpause();
-    config.pause_scope(&earnproof_shared::PauseScope::Update);
-    config.unpause_scope(&earnproof_shared::PauseScope::Update);
-    let wasm_hash_config = bytes32(&env, 0x91);
-    let pending_config = bytes32(&env, 0x94);
-    config.approve_upgrade(&wasm_hash_config, &2);
-    env.ledger()
-        .set_sequence_number(env.ledger().sequence() + earnproof_shared::UPGRADE_TIMELOCK_LEDGERS);
-    config.upgrade_contract(&wasm_hash_config);
-    config.approve_upgrade(&pending_config, &3);
     config.nominate_admin(&rotated_admin);
     config.accept_admin();
-    let pending_admin = Address::generate(&env);
-    config.nominate_admin(&pending_admin);
 
     let issuers_id = env.register(IssuerRegistryContract, ());
     let issuers = IssuerRegistryContractClient::new(&env, &issuers_id);
@@ -341,33 +336,10 @@ pub fn exercised_deployment() -> Deployment {
         &bytes32(&env, 20),
         &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
     );
-    issuers.register_issuer(
-        &bytes32(&env, 30),
-        &held_suspended_issuer,
-        &bytes32(&env, 31),
-        &bytes32(&env, 99),
-    );
-    issuers.suspend_issuer(
-        &bytes32(&env, 30),
-        &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
-    );
-    let pending_issuers_admin = Address::generate(&env);
-    issuers.nominate_admin(&pending_issuers_admin);
-    issuers.pause_scope(&earnproof_shared::PauseScope::Update);
-    issuers.unpause_scope(&earnproof_shared::PauseScope::Update);
-    let wasm_hash_issuers = bytes32(&env, 0x92);
-    let pending_issuers = bytes32(&env, 0x95);
-    issuers.approve_upgrade(&wasm_hash_issuers, &2);
-    env.ledger()
-        .set_sequence_number(env.ledger().sequence() + earnproof_shared::UPGRADE_TIMELOCK_LEDGERS);
-    issuers.upgrade_contract(&wasm_hash_issuers, &2);
-    issuers.approve_upgrade(&pending_issuers, &3);
 
     let proofs_id = env.register(ProofRegistryContract, ());
     let proofs = ProofRegistryContractClient::new(&env, &proofs_id);
     proofs.initialize(&admin, &issuers_id, &config_id);
-    let pending_proofs_admin = Address::generate(&env);
-    proofs.nominate_admin(&pending_proofs_admin);
     proofs.register_proof(
         &proof_id,
         &bytes32(&env, 6),
@@ -385,14 +357,11 @@ pub fn exercised_deployment() -> Deployment {
     proofs.revoke_proof(&bytes32(&env, 7));
     proofs.open_dispute(&proof_id, &rotated_issuer, &bytes32(&env, 30));
     proofs.archive_proof(&bytes32(&env, 7));
-    proofs.pause_scope(&earnproof_shared::PauseScope::Update);
-    proofs.unpause_scope(&earnproof_shared::PauseScope::Update);
+    proofs.pause_scope(&earnproof_shared::PauseScope::Updates);
+    proofs.unpause_scope(&earnproof_shared::PauseScope::Updates);
     let wasm_hash_proofs = bytes32(&env, 0x93);
     let pending_proofs = bytes32(&env, 0x96);
     proofs.approve_upgrade(&wasm_hash_proofs, &2);
-    env.ledger()
-        .set_sequence_number(env.ledger().sequence() + earnproof_shared::UPGRADE_TIMELOCK_LEDGERS);
-    proofs.upgrade_contract(&wasm_hash_proofs);
     proofs.approve_upgrade(&pending_proofs, &3);
 
     proofs.register_proof_with_payload(
@@ -403,9 +372,14 @@ pub fn exercised_deployment() -> Deployment {
         &1_000_000,
         &Bytes::from_array(&env, &[0xAB; 8]),
     );
-    let successor = Address::generate(&env);
-    config.pause_scope(&earnproof_shared::PauseScope::Upgrades);
+    config.pause();
 
+    config.begin_migration(&2, &1);
+    issuers.begin_migration(&2, &1);
+    proofs.begin_migration(&2, &1);
+
+    let successor = Address::generate(&env);
+    config.set_scoped_pause(&earnproof_shared::PauseScope::Upgrades, &true);
     config.nominate_successor(&successor);
     config.activate_successor();
 
@@ -414,12 +388,6 @@ pub fn exercised_deployment() -> Deployment {
 
     proofs.nominate_successor(&successor);
     proofs.activate_successor();
-
-    config.pause();
-
-    config.begin_migration(&3, &1);
-    issuers.begin_migration(&3, &1);
-    proofs.begin_migration(&3, &1);
 
     Deployment {
         env,

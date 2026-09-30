@@ -223,9 +223,7 @@ mod tests {
     #[test]
     fn deprecated_schema_rejects_new_registrations() {
         let fixture = fixture();
-        fixture
-            .config
-            .deprecate_schema_version(&1);
+        fixture.config.deprecate_schema_version(&1);
         assert_eq!(
             fixture.proofs.try_register_proof(
                 &bytes(&fixture.clock.env, 20),
@@ -234,7 +232,7 @@ mod tests {
                 &1,
                 &(NOW + 1),
             ),
-            Err(Ok(ProofError::SchemaVersionNotApproved))
+            Err(Ok(ProofError::UnsupportedSchema))
         );
     }
 
@@ -242,12 +240,8 @@ mod tests {
     fn schema_deprecation_takes_effect_immediately() {
         let fixture = fixture();
         // Approve and deprecate at the same timestamp — no time passes.
-        fixture
-            .config
-            .approve_schema_version(&2);
-        fixture
-            .config
-            .deprecate_schema_version(&2);
+        fixture.config.approve_schema_version(&2);
+        fixture.config.deprecate_schema_version(&2);
         assert!(!fixture.config.is_schema_version_approved(&2));
         assert_eq!(
             fixture.proofs.try_register_proof(
@@ -257,7 +251,7 @@ mod tests {
                 &2,
                 &(NOW + 1),
             ),
-            Err(Ok(ProofError::SchemaVersionNotApproved))
+            Err(Ok(ProofError::UnsupportedSchema))
         );
     }
 
@@ -266,9 +260,7 @@ mod tests {
         let fixture = fixture();
         register(&fixture, 22, NOW + 100);
         // Schema is deprecated after the proof was registered.
-        fixture
-            .config
-            .deprecate_schema_version(&1);
+        fixture.config.deprecate_schema_version(&1);
         // The existing proof is still valid — deprecation only gates new registrations.
         assert!(fixture
             .proofs
@@ -282,7 +274,7 @@ mod tests {
                 &1,
                 &(NOW + 100),
             ),
-            Err(Ok(ProofError::SchemaVersionNotApproved))
+            Err(Ok(ProofError::UnsupportedSchema))
         );
     }
 

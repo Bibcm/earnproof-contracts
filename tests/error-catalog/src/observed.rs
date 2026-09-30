@@ -207,7 +207,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
     );
     initial_dep.issuers.revoke_issuer(
         &bytes32(env, 20),
-        &soroban_sdk::BytesN::from_array(env, &[1u8; 32]),
+        &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
     );
     observed.record(
         "issuer-registry update revoked issuer",
@@ -221,7 +221,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
         "issuer-registry reactivate revoked issuer",
         code(initial_dep.issuers.try_reactivate_issuer(
             &bytes32(env, 20),
-            &soroban_sdk::BytesN::from_array(env, &[1u8; 32]),
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
         )),
     );
 
@@ -315,7 +315,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
 
     // New precondition codes (307-309): drive a real failure path for each.
     // 307: ContractPaused — pause the protocol then attempt registration.
-    let deployment2 = self::deployment();
+    let deployment2 = deployment();
     let env2 = &deployment2.env;
     deployment2.config.pause();
     observed.record(
@@ -330,7 +330,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
     );
 
     // 308: IssuerInactive — suspend the issuer then attempt registration.
-    let deployment3 = self::deployment();
+    let deployment3 = deployment();
     let env3 = &deployment3.env;
     deployment3.issuers.suspend_issuer(
         &bytes32(env3, 1),
@@ -483,6 +483,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
             &(env.ledger().sequence() + 10),
         )),
     );
+
     // Every catalogued `Returned` code must appear at least once above.
     for entry in ERROR_CATALOG {
         if entry.status == Status::Returned {
@@ -600,7 +601,7 @@ fn a_registry_pointed_at_an_empty_config_reports_unsupported_schema() {
         &FAR_FUTURE,
     );
 
-    assert_eq!(result, Err(Ok(ProofError::SchemaVersionNotApproved)));
+    assert_eq!(result, Err(Ok(ProofError::UnsupportedSchema)));
 }
 
 #[test]

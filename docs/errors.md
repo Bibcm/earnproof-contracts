@@ -104,10 +104,10 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 | 302 | `ProofAlreadyRevoked` | `ProofError` | proof-registry | returned | never | 400 |
 | 303 | `ProofExpired` | `ProofError` | proof-registry | returned | after-caller-change | 400 |
 | 304 | `InvalidSchemaVersion` | `ProofError` | proof-registry | returned | after-operator-action | 400 |
-| 305 | `SchemaVersionNotApproved` | `ProofError` | proof-registry | returned | after-operator-action | 400 |
+| 305 | `SchemaVersionNotApproved` | `ProofError` | proof-registry | reserved | after-operator-action | 400 |
 | 307 | `ContractPaused` | `ProofError` | proof-registry | returned | after-operator-action | 503 |
 | 308 | `IssuerInactive` | `ProofError` | proof-registry | returned | after-operator-action | 403 |
-| 309 | `UnsupportedSchema` | `ProofError` | proof-registry | reserved | after-operator-action | 400 |
+| 309 | `UnsupportedSchema` | `ProofError` | proof-registry | returned | after-operator-action | 400 |
 | 310 | `MalformedInput` | `ProofError` | proof-registry | returned | after-caller-change | 400 |
 | 311 | `InvalidBatchSize` | `ProofError` | proof-registry | returned | after-caller-change | 400 |
 | 312 | `InvalidActivationTime` | `ProofError` | proof-registry | returned | after-caller-change | 400 |
@@ -396,7 +396,7 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 
 - Enum: `ProofError`
 - Domain: proof-registry
-- Status: returned
+- Status: reserved
 - Retry: after-operator-action
 - Cause: The schema version is non-zero but is not approved in protocol-config, either because it was never approved or because it was deprecated.
 - Remediation: A protocol operator must approve the version. A registry pointed at an uninitialized protocol config also returns UnsupportedSchema (309).
@@ -429,9 +429,9 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 
 - Enum: `ProofError`
 - Domain: proof-registry
-- Status: reserved
+- Status: returned
 - Retry: after-operator-action
-- Cause: Reserved for when proof schema identifier is not supported. Unapproved schema version is reported as 305 SchemaVersionNotApproved.
+- Cause: The proof schema identifier is not supported or not registered in the protocol config.
 - Remediation: Call is_schema_version_approved on the protocol config contract to verify the schema version is approved. An operator must approve the schema version before it can be used for proof registration.
 - Suggested HTTP status: 400
 - Client message: "Schema not supported"

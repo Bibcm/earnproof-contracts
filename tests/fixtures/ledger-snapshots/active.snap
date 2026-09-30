@@ -1,162 +1,45 @@
-//! Event topic and payload evolution.
-//!
-//! `tests/event-fixtures/` validates that the JSON fixtures are well-formed.
-//! What it cannot check is whether they still describe the contracts: a fixture
-//! is a static file, and nothing stops the two from drifting apart.
-//!
-//! These tests close that gap by comparing live emissions against the fixtures.
-//! A renamed topic or a dropped payload field fails here, which is what makes
-//! the fixtures usable as a compatibility contract for indexers rather than
-//! documentation that happened to be true once.
+# scenario: active
+# revision: 10
+# reason: Regenerate after merging develop's issuer-epoch/capacity fields into PR 237
+# body-digest: 2d2d3bf111067bae06b539efb5924f4dd19e107331caef12653cc01d76d67c22
 
 use crate::harness::{hash, read_events, Deployment, ObservedEvent, APPROVED_SCHEMA};
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{Address, Env, Symbol, TryFromVal, Val};
 
-/// Every topic the fixtures declare, with the payload fields they promise.
-///
-/// Mirrors `tests/fixtures/events/*/v1/*.json`. Changing either side without
-/// the other fails a test here, which is the point: the fixture is the
-/// published contract and the emission is the implementation.
-const DECLARED_EVENTS: &[(&str, &[&str])] = &[
-    // protocol-config
-    ("initialized", &["admin"]),
-    ("admin_changed", &["proposal_id", "new_admin"]),
-    (
-        "admin_transfer_nominated",
-        &["pending_admin", "nominated_by"],
-    ),
-    ("admin_transfer_accepted", &["new_admin"]),
-    (
-        "admin_transfer_cancelled",
-        &["pending_admin", "cancelled_by"],
-    ),
-    ("paused", &["proposal_id", "paused"]),
-    ("unpaused", &["proposal_id", "paused"]),
-    ("governance_role_granted", &["assignment", "granted_by"]),
-    (
-        "governance_role_removed",
-        &["role", "address", "removed_by"],
-    ),
-    ("schema_approved", &["proposal_id", "version"]),
-    ("schema_deprecated", &["proposal_id", "version"]),
-    // issuer-registry
-    (
-        "issuer_registered",
-        &[
-            "issuer_id_hash",
-            "issuer_address",
-            "metadata_hash",
-            "metadata_uri_hash",
-            "metadata_revision",
-            "provenance_commitment",
-            "created_at",
-            "epoch",
-        ],
-    ),
-    (
-        "issuer_metadata_updated",
-        &[
-            "issuer_id_hash",
-            "metadata_hash",
-            "metadata_uri_hash",
-            "metadata_revision",
-            "updated_at",
-            "epoch",
-        ],
-    ),
-    (
-        "issuer_suspended",
-        &[
-            "issuer_id_hash",
-            "effective_ledger",
-            "effective_timestamp",
-            "reason_commitment",
-            "updated_at",
-            "epoch",
-        ],
-    ),
-    (
-        "issuer_reactivated",
-        &[
-            "issuer_id_hash",
-            "effective_ledger",
-            "effective_timestamp",
-            "reason_commitment",
-            "updated_at",
-            "epoch",
-        ],
-    ),
-    (
-        "issuer_revoked",
-        &[
-            "issuer_id_hash",
-            "effective_ledger",
-            "effective_timestamp",
-            "reason_commitment",
-            "updated_at",
-            "epoch",
-        ],
-    ),
-    (
-        "issuer_rotation_nominated",
-        &[
-            "issuer_id_hash",
-            "old_address",
-            "new_address",
-            "expires_at_ledger",
-        ],
-    ),
-    (
-        "issuer_rotation_cancelled",
-        &["issuer_id_hash", "cancelled_by"],
-    ),
-    (
-        "issuer_address_rotated",
-        &[
-            "issuer_id_hash",
-            "old_address",
-            "new_address",
-            "updated_at",
-            "epoch",
-        ],
-    ),
-    // proof-registry
-    (
-        "proof_registered",
-        &["proof_id_hash", "disclosure_policy_hash", "epoch"],
-    ),
-    (
-        "dependency_replacement_proposed",
-        &[
-            "proposal_id",
-            "issuer_registry",
-            "protocol_config",
-            "expires_at_ledger",
-            "proposed_by",
-        ],
-    ),
-    (
-        "dependency_replacement_cancelled",
-        &["proposal_id", "cancelled_by"],
-    ),
-    (
-        "dependencies_replaced",
-        &[
-            "proposal_id",
-            "previous_issuer_registry",
-            "issuer_registry",
-            "previous_protocol_config",
-            "protocol_config",
-            "activated_by",
-        ],
-    ),
-    (
-        "proof_registered_with_payload",
-        &["proof_id_hash", "payload_len", "payload_hash", "epoch"],
-    ),
-    ("proof_revoked", &["proof_id_hash", "by_admin", "epoch"]),
-];
+[storage]
+issuer-registry instance [sym:ActiveIssuerCount] = u32:1
+issuer-registry instance [sym:Admin] = addr:admin
+issuer-registry instance [sym:ContractVersion] = u32:1
+issuer-registry instance [sym:Genesis] = {sym:genesis_id: bytes:1bb3d1dc4dc8313672e6dc56c6b7051f74fd611eb1b8d59faa5d787789e4e115, sym:initialized_at_ledger: u32:1000}
+issuer-registry instance [sym:InstanceLiveUntil] = u32:501000
+issuer-registry instance [sym:IssuerEpoch] = u64:1
+issuer-registry instance [sym:MaxActiveIssuers] = u32:4294967295
+issuer-registry instance [sym:ReactivationCooldown] = u64:0
+issuer-registry persistent [sym:AddressIssuer, addr:issuer] = bytes:1111111111111111111111111111111111111111111111111111111111111111
+issuer-registry persistent [sym:AddressTtl, addr:issuer] = u32:501000
+issuer-registry persistent [sym:Issuer, bytes:1111111111111111111111111111111111111111111111111111111111111111] = {sym:created_at: u64:1000, sym:issuer_address: addr:issuer, sym:issuer_id_hash: bytes:1111111111111111111111111111111111111111111111111111111111111111, sym:metadata_hash: bytes:2222222222222222222222222222222222222222222222222222222222222222, sym:metadata_revision: u32:1, sym:metadata_uri_hash: bytes:0000000000000000000000000000000000000000000000000000000000000000, sym:provenance_commitment: bytes:6363636363636363636363636363636363636363636363636363636363636363, sym:reason_commitment: void, sym:status: [sym:Active], sym:status_effective_ledger: u32:1000, sym:status_effective_timestamp: u64:1000, sym:updated_at: u64:1000}
+issuer-registry persistent [sym:IssuerTtl, bytes:1111111111111111111111111111111111111111111111111111111111111111] = u32:501000
+proof-registry instance [sym:Admin] = addr:admin
+proof-registry instance [sym:ContractVersion] = u32:1
+proof-registry instance [sym:Genesis] = {sym:genesis_id: bytes:87d5e19ffff41ef394bed747f4ca4dcdcbf818cec54eb466639248eb14dc82cd, sym:initialized_at_ledger: u32:1000}
+proof-registry instance [sym:InstanceLiveUntil] = u32:501000
+proof-registry instance [sym:IssuerRegistry] = addr:issuer-registry
+proof-registry instance [sym:ProtocolConfig] = addr:protocol-config
+proof-registry instance [sym:RegistryEpoch] = u32:1
+proof-registry persistent [sym:IssuerActiveProofCount, addr:issuer] = u32:1
+proof-registry persistent [sym:IssuerLifetimeProofCount, addr:issuer] = u32:1
+proof-registry persistent [sym:Proof, bytes:3333333333333333333333333333333333333333333333333333333333333333] = {sym:activates_at: u64:0, sym:commitment_hash: bytes:4444444444444444444444444444444444444444444444444444444444444444, sym:created_at: u64:1000, sym:created_ledger: u32:1000, sym:expires_at: u64:2000, sym:issuer_address: addr:issuer, sym:proof_id_hash: bytes:3333333333333333333333333333333333333333333333333333333333333333, sym:revoked_at: u64:0, sym:schema_version: u32:1, sym:status: [sym:Active]}
+proof-registry persistent [sym:ProofTtl, bytes:3333333333333333333333333333333333333333333333333333333333333333] = u32:501000
+proof-registry persistent [sym:SchemaRateUsage, u32:1, u32:1000] = u32:1
+protocol-config instance [sym:Admin] = addr:admin
+protocol-config instance [sym:ConfigHistoryTotal] = u32:1
+protocol-config instance [sym:ConfigVersion] = u32:2
+protocol-config instance [sym:ContractVersion] = u32:1
+protocol-config instance [sym:Genesis] = {sym:genesis_id: bytes:fc884b881dd72470b277e7f17051834343fce924e5328f844966e438d3a07cd3, sym:initialized_at_ledger: u32:1000}
+protocol-config instance [sym:Paused] = false
+protocol-config persistent [sym:ConfigHistoryRing, u32:0] = {sym:category: [sym:SchemaApproval], sym:config_version: u32:2, sym:ledger: u32:1000, sym:proposal_commitment: bytes:8f88362ee8034de8dfd2d681d099066cada58b40ee0bbbc2321309d0b4f4d43f, sym:timestamp: u64:1000}
+protocol-config persistent [sym:SchemaVersion, u32:1] = true
 
 /// Looks up the declared payload fields for a topic.
 fn declared_fields(topic: &str) -> &'static [&'static str] {

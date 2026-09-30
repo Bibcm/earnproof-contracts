@@ -100,17 +100,17 @@ fn declared_variants() -> std::vec::Vec<(&'static str, &'static str, u32)> {
         (
             "IssuerError",
             "ReactivationCooldownActive",
-            IssuerError::ReactivationCooldownActive as u32,
+            IssuerError::ReactivationCooldownActive as u32
         ),
         (
             "IssuerError",
             "InvalidMetadataCommitment",
-            IssuerError::InvalidMetadataCommitment as u32,
+            IssuerError::InvalidMetadataCommitment as u32
         ),
         (
             "ProofError",
             "ProofAlreadyRegistered",
-            ProofError::ProofAlreadyRegistered as u32,
+            ProofError::ProofAlreadyRegistered as u32
         ),
         (
             "ProofError",

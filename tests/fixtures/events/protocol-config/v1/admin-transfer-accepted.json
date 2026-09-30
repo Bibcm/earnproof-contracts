@@ -5,11 +5,6 @@
   "schema_version": 1,
   "topics": ["AdminTransferAccepted"],
   "payload": {
-    "proposal_id": {
-      "type": "BytesN<32>",
-      "description": "Governance proposal identifier.",
-      "example": "0000000000000000000000000000000000000000000000000000000000000000"
-    },
     "new_admin": {
       "type": "Address",
       "description": "Stellar address of the new protocol administrator.",
