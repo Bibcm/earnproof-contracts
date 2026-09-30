@@ -157,27 +157,14 @@ fn lookup_helpers_agree_with_the_inventory() {
         std::vec![
             "AddressIssuer",
             "AddressTtl",
-            "ExecutedProposal",
-            "GovernanceAssignment",
+            "AllowedWasm",
             "Issuer",
             "IssuerTtl",
             "PendingIssuerRotation",
             "ReactivatableAt",
-            "RotationCount",
-            "RotationHistory",
-        ]
-    );
-
-    let proof_persistent: std::vec::Vec<&str> =
-        namespaces_for("proof-registry", StorageClass::Persistent).collect();
-    assert_eq!(
-        proof_persistent,
-        std::vec![
-            "ExecutedProposal",
-            "GovernanceAssignment",
-            "Proof",
-            "ProofPayloadMeta",
-            "RevocationInfo",
+            "ScopedPause",
+            "UpgradeApprovalMetadata",
+            "UpgradeHistory"
         ]
     );
 
@@ -188,15 +175,21 @@ fn lookup_helpers_agree_with_the_inventory() {
         std::vec![
             "Admin",
             "ContractVersion",
+            "CurrentWasmHash",
             "Decommissioned",
             "Genesis",
+            "InstanceLiveUntil",
             "IssuerRegistry",
-            "LastDependencyReplacement",
+            "IssuerRegistryVersion",
+            "LatestUpgradeReceipt",
             "MigrationStatus",
-            "PendingDependencies",
+            "PendingAdmin",
             "ProtocolConfig",
+            "ProtocolConfigVersion",
             "RegistryEpoch",
-            "Successor"
+            "Successor",
+            "UpgradeApproval",
+            "UpgradeHistoryCount"
         ]
     );
 

@@ -59,7 +59,7 @@ fn deployment() -> Deployment {
     let config_id = env.register(ProtocolConfigContract, ());
     let config = ProtocolConfigContractClient::new(&env, &config_id);
     config.initialize(&admin);
-    config.approve_schema_version(&bytes32(&env, 0x10), &1);
+    config.approve_schema_version(&1);
 
     let issuers_id = env.register(IssuerRegistryContract, ());
     let issuers = IssuerRegistryContractClient::new(&env, &issuers_id);
@@ -131,7 +131,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
     );
     observed.record(
         "protocol-config pause uninitialized",
-        code(fresh_config.try_pause(&bytes32(env, 0x10))),
+        code(fresh_config.try_pause()),
     );
     observed.record(
         "protocol-config initialize twice",
@@ -139,19 +139,11 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
     );
     observed.record(
         "protocol-config approve_schema_version(0)",
-        code(
-            initial_dep
-                .config
-                .try_approve_schema_version(&bytes32(env, 0x10), &0),
-        ),
+        code(initial_dep.config.try_approve_schema_version(&0)),
     );
     observed.record(
         "protocol-config deprecate_schema_version(0)",
-        code(
-            initial_dep
-                .config
-                .try_deprecate_schema_version(&bytes32(env, 0x10), &0),
-        ),
+        code(initial_dep.config.try_deprecate_schema_version(&0)),
     );
 
     // --- issuer-registry -------------------------------------------------
@@ -175,6 +167,14 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
             &initial_dep.issuer,
             &bytes32(env, 3),
             &bytes32(env, 99),
+        )),
+    );
+    observed.record(
+        "issuer-registry set_issuer_metadata_commitment with all-zero digest",
+        code(initial_dep.issuers.try_set_issuer_metadata_commitment(
+            &bytes32(env, 1),
+            &soroban_sdk::BytesN::from_array(env, &[0u8; 32]),
+            &bytes32(env, 3),
         )),
     );
     observed.record(
@@ -206,7 +206,6 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
         &bytes32(env, 99),
     );
     initial_dep.issuers.revoke_issuer(
-        &bytes32(env, 0x10),
         &bytes32(env, 20),
         &soroban_sdk::BytesN::from_array(env, &[1u8; 32]),
     );
@@ -221,7 +220,6 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
     observed.record(
         "issuer-registry reactivate revoked issuer",
         code(initial_dep.issuers.try_reactivate_issuer(
-            &bytes32(env, 0x10),
             &bytes32(env, 20),
             &soroban_sdk::BytesN::from_array(env, &[1u8; 32]),
         )),
@@ -317,9 +315,9 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
 
     // New precondition codes (307-309): drive a real failure path for each.
     // 307: ContractPaused — pause the protocol then attempt registration.
-    let deployment2 = deployment();
+    let deployment2 = self::deployment();
     let env2 = &deployment2.env;
-    deployment2.config.pause(&bytes32(env2, 0x11));
+    deployment2.config.pause();
     observed.record(
         "proof-registry contract paused",
         code(deployment2.proofs.try_register_proof(
@@ -332,10 +330,9 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
     );
 
     // 308: IssuerInactive — suspend the issuer then attempt registration.
-    let deployment3 = deployment();
+    let deployment3 = self::deployment();
     let env3 = &deployment3.env;
     deployment3.issuers.suspend_issuer(
-        &bytes32(env3, 0x11),
         &bytes32(env3, 1),
         &soroban_sdk::BytesN::from_array(env3, &[1u8; 32]),
     );
@@ -364,6 +361,71 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
         )),
     );
 
+    // 311: InvalidBatchSize — an empty batch is rejected before any
+    // cross-contract call is made, on both the registration and revocation
+    // paths.
+    let empty_registration_batch: soroban_sdk::Vec<earnproof_shared::ProofRegistrationInput> =
+        soroban_sdk::Vec::new(env);
+    observed.record(
+        "proof-registry registration batch with zero entries",
+        code(
+            initial_dep
+                .proofs
+                .try_register_proofs_batch(&empty_registration_batch, &initial_dep.issuer),
+        ),
+    );
+
+    let empty_revocation_batch: soroban_sdk::Vec<soroban_sdk::BytesN<32>> =
+        soroban_sdk::Vec::new(env);
+    observed.record(
+        "proof-registry revocation batch with zero entries",
+        code(
+            initial_dep
+                .proofs
+                .try_revoke_proofs_batch(&empty_revocation_batch),
+        ),
+    );
+
+    // 312: InvalidActivationTime — activation at or after expiry can never
+    // be valid.
+    observed.record(
+        "proof-registry activation at or after expiry",
+        code(initial_dep.proofs.try_register_proof_with_activation(
+            &bytes32(env, 70),
+            &bytes32(env, 71),
+            &initial_dep.issuer,
+            &1,
+            &FAR_FUTURE,
+            &FAR_FUTURE,
+        )),
+    );
+
+    // 313: DisputeAlreadyOpen — opening a second dispute while one is open.
+    initial_dep
+        .proofs
+        .open_dispute(&proof_id, &initial_dep.issuer, &bytes32(env, 80));
+    observed.record(
+        "proof-registry dispute already open",
+        code(initial_dep.proofs.try_open_dispute(
+            &proof_id,
+            &initial_dep.issuer,
+            &bytes32(env, 81),
+        )),
+    );
+
+    // 314: DisputeNotFound — no dispute exists for this proof.
+    observed.record(
+        "proof-registry dispute not found",
+        code(initial_dep.proofs.try_withdraw_dispute(&bytes32(env, 99))),
+    );
+
+    // 315: DisputeNotOpen — the dispute above is withdrawn, then acted on again.
+    initial_dep.proofs.withdraw_dispute(&proof_id);
+    observed.record(
+        "proof-registry dispute not open",
+        code(initial_dep.proofs.try_withdraw_dispute(&proof_id)),
+    );
+
     // --- issuer-registry capacity and cooldown --------------------------
     // A dedicated registry keeps the active-count accounting isolated from the
     // paths above.
@@ -375,7 +437,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
         &bytes32(env, 50),
         &cap_issuer,
         &bytes32(env, 51),
-        &bytes32(env, 99),
+        &bytes32(env, 59),
     );
 
     observed.record(
@@ -390,22 +452,23 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
             &bytes32(env, 52),
             &Address::generate(env),
             &bytes32(env, 53),
-            &bytes32(env, 99),
+            &bytes32(env, 58),
         )),
     );
 
     cap.set_reactivation_cooldown(&1_000);
-    cap.suspend_issuer(
-        &bytes32(env, 0x11),
-        &bytes32(env, 50),
-        &soroban_sdk::BytesN::from_array(env, &[1u8; 32]),
-    );
+    cap.suspend_issuer(&bytes32(env, 50), &bytes32(env, 57));
     observed.record(
         "issuer-registry reactivate before cooldown",
-        code(cap.try_reactivate_issuer(
-            &bytes32(env, 0x12),
+        code(cap.try_reactivate_issuer(&bytes32(env, 50), &bytes32(env, 56))),
+    );
+
+    observed.record(
+        "issuer-registry set metadata commitment empty",
+        code(cap.try_set_issuer_metadata_commitment(
             &bytes32(env, 50),
-            &soroban_sdk::BytesN::from_array(env, &[1u8; 32]),
+            &soroban_sdk::BytesN::from_array(env, &[0u8; 32]),
+            &bytes32(env, 53),
         )),
     );
 
@@ -420,7 +483,6 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
             &(env.ledger().sequence() + 10),
         )),
     );
-
     // Every catalogued `Returned` code must appear at least once above.
     for entry in ERROR_CATALOG {
         if entry.status == Status::Returned {
@@ -451,7 +513,7 @@ fn a_paused_protocol_is_reported_as_contract_paused() {
     // documentation stays honest, and a future change that alters the pause
     // code has to update the catalog in the same change.
     let deployment = deployment();
-    deployment.config.pause(&bytes32(&deployment.env, 0x11));
+    deployment.config.pause();
 
     let result = deployment.proofs.try_register_proof(
         &bytes32(&deployment.env, 1),
@@ -481,7 +543,6 @@ fn a_suspended_issuer_is_reported_as_issuer_inactive() {
         &bytes32(env, 99),
     );
     deployment.issuers.suspend_issuer(
-        &bytes32(env, 0x11),
         &bytes32(env, 40),
         &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
     );
@@ -539,7 +600,7 @@ fn a_registry_pointed_at_an_empty_config_reports_unsupported_schema() {
         &FAR_FUTURE,
     );
 
-    assert_eq!(result, Err(Ok(ProofError::UnsupportedSchema)));
+    assert_eq!(result, Err(Ok(ProofError::SchemaVersionNotApproved)));
 }
 
 #[test]

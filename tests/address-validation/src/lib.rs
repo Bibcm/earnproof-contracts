@@ -78,7 +78,7 @@ mod tests {
         let issuer_registry_id = env.register(IssuerRegistryContract, ());
         let issuer_registry = IssuerRegistryContractClient::new(&env, &issuer_registry_id);
         config.initialize(&admin);
-        config.approve_schema_version(&bytes(&env, 0x10), &1);
+        config.approve_schema_version(&1);
         issuer_registry.initialize(&admin);
         issuer_registry.register_issuer(
             &bytes(&env, 1),

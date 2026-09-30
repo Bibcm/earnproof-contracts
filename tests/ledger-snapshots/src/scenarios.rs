@@ -117,7 +117,7 @@ pub fn build(name: &str) -> Scenario {
         config.initialize(&admin);
     });
     recorder.after(&env, || {
-        config.approve_schema_version(&bytes32(&env, 0x10), &SCHEMA_VERSION);
+        config.approve_schema_version(&SCHEMA_VERSION);
     });
     recorder.after(&env, || {
         issuers.initialize(&admin);
@@ -150,16 +150,12 @@ pub fn build(name: &str) -> Scenario {
     match name {
         "initialized" | "active" => {}
         // --- paused: the emergency brake engaged ---------------------------
-        "paused" => recorder.after(&env, || config.pause(&bytes32(&env, 0x11))),
+        "paused" => recorder.after(&env, || config.pause()),
         // --- revoked: both terminal states reached -------------------------
         "revoked" => {
             recorder.after(&env, || proofs.revoke_proof(&bytes32(&env, PROOF_ID)));
             recorder.after(&env, || {
-                issuers.revoke_issuer(
-                    &bytes32(&env, 0x12),
-                    &bytes32(&env, ISSUER_ID),
-                    &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
-                );
+                issuers.revoke_issuer(&bytes32(&env, ISSUER_ID), &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]));
             });
         }
         // --- expired: ledger time past the proof expiration ----------------
