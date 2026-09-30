@@ -148,6 +148,26 @@ pub struct ProofPayloadRecord {
     pub payload_hash: BytesN<32>,
 }
 
+/// Per-schema registration policy. Proof-type identifiers are stable numeric
+/// values defined by the integrating application; the legacy identifier `0`
+/// is reserved for the original registration API.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchemaPolicy {
+    pub proof_types: soroban_sdk::Vec<u32>,
+    pub max_validity_seconds: u64,
+}
+
+/// Immutable registration metadata kept separately from `ProofRecord` so
+/// existing persisted proof records remain decodable across upgrades.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProofPolicySnapshot {
+    pub proof_type: u32,
+    pub commitment_algorithm: u32,
+    pub max_validity_seconds: u64,
+}
+
 pub fn protocol_config_digest(
     env: &Env,
     admin: &Address,
@@ -308,7 +328,7 @@ impl InterfaceVersion {
 pub const ISSUER_REGISTRY_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 0, 0);
 
 /// The interface version implemented by `protocol-config`.
-pub const PROTOCOL_CONFIG_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 0, 0);
+pub const PROTOCOL_CONFIG_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 1, 0);
 
 /// Returns true when `actual` is compatible with the `required` minimum.
 ///
@@ -483,6 +503,8 @@ pub enum ConfigChangeCategory {
     SchemaApproval,
     SchemaDeprecation,
     SchemaPayloadLimit,
+    SchemaPolicy,
+    CommitmentAlgorithmPolicy,
 }
 
 /// One bounded, on-chain summary of a governance change, as stored in the

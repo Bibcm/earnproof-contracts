@@ -8,6 +8,7 @@ mod contract_compatibility;
 
 #[cfg(test)]
 mod tests {
+    use earnproof_shared::{LEGACY_COMMITMENT_ALGORITHM, SHA256_COMMITMENT_ALGORITHM_V1};
     use sha2::{Digest, Sha256};
 
     #[test]
@@ -39,5 +40,20 @@ mod tests {
                     .all(|character| character.is_ascii_hexdigit());
             assert!(!valid, "{} must be rejected", fields[0]);
         }
+    }
+
+    #[test]
+    fn commitment_algorithm_known_vectors_are_stable() {
+        let payload = b"proof:example:1";
+        let legacy = Sha256::digest(payload);
+        assert_eq!(LEGACY_COMMITMENT_ALGORITHM, 0);
+        assert_eq!(format!("{legacy:x}"), "c5aecb1a93a48d868c6708d746a71d7eb57f0cfd7a18f0659f97d34fc63efa19");
+
+        let mut versioned_hasher = Sha256::new();
+        versioned_hasher.update(b"earnproof:proof-commitment:v1\0");
+        versioned_hasher.update(payload);
+        let versioned = versioned_hasher.finalize();
+        assert_eq!(SHA256_COMMITMENT_ALGORITHM_V1, 1);
+        assert_eq!(format!("{versioned:x}"), "401f9532c86efbb3b12e265287875c82792657c04834d25b7f6736649ae535f4");
     }
 }
