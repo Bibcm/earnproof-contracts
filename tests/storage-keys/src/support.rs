@@ -374,6 +374,7 @@ pub fn exercised_deployment() -> Deployment {
         &1_000_000,
     );
     proofs.revoke_proof(&bytes32(&env, 7));
+    proofs.open_dispute(&proof_id, &rotated_issuer, &bytes32(&env, 30));
     proofs.archive_proof(&bytes32(&env, 7));
     proofs.pause_scope(&earnproof_shared::PauseScope::Update);
     proofs.unpause_scope(&earnproof_shared::PauseScope::Update);

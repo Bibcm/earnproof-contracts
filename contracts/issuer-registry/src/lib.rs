@@ -40,18 +40,18 @@ enum DataKey {
     UpgradeApprovalMetadata(BytesN<32>),
     /// Immutable deployment identity, written once at `initialize`.
     Genesis,
-    /// Monotonic counter advanced once per externally visible issuer mutation.
+    /// Monotonic epoch, advanced once per externally visible issuer mutation.
     /// Off-chain consumers poll it as a cheap cache-invalidation signal.
     IssuerEpoch,
-    /// Governed maximum number of issuers that may hold `Active` status at once.
+    /// Governed ceiling on the number of simultaneously active issuers.
     MaxActiveIssuers,
-    /// Current number of issuers holding `Active` status.
+    /// Current count of issuers with `IssuerStatus::Active`.
     ActiveIssuerCount,
-    /// Governed minimum ledger-time cooldown, in seconds, enforced before a
-    /// suspended issuer may be reactivated.
+    /// Governed cooldown, in seconds, a suspended issuer must wait before
+    /// reactivation is permitted.
     ReactivationCooldown,
-    /// Per-issuer earliest ledger time at which reactivation is permitted.
-    /// Fixed at suspension time from the cooldown then in force.
+    /// Ledger timestamp at or after which a specific suspended issuer may be
+    /// reactivated. Fixed at suspension time from the cooldown then in force.
     ReactivatableAt(BytesN<32>),
 }
 
@@ -162,7 +162,6 @@ pub struct IssuerSuspended {
     pub issuer_id_hash: BytesN<32>,
     pub effective_ledger: u32,
     pub effective_timestamp: u64,
-    pub reason_commitment: BytesN<32>,
     pub updated_at: u64,
     pub epoch: u64,
 }
@@ -176,7 +175,6 @@ pub struct IssuerReactivated {
     pub issuer_id_hash: BytesN<32>,
     pub effective_ledger: u32,
     pub effective_timestamp: u64,
-    pub reason_commitment: BytesN<32>,
     pub updated_at: u64,
     pub epoch: u64,
 }
@@ -190,7 +188,6 @@ pub struct IssuerRevoked {
     pub issuer_id_hash: BytesN<32>,
     pub effective_ledger: u32,
     pub effective_timestamp: u64,
-    pub reason_commitment: BytesN<32>,
     pub updated_at: u64,
     pub epoch: u64,
 }
@@ -1553,9 +1550,9 @@ impl IssuerRegistryContract {
         // status change is never stored without its effective ledger and
         // timestamp. Timing is sourced only from the host ledger environment.
         let effective_ledger = env.ledger().sequence();
+        let now = env.ledger().timestamp();
         record.status = status.clone();
         record.reason_commitment = Some(reason_commitment.clone());
-        let now = env.ledger().timestamp();
 
         // Enforce cooldown and capacity, and adjust the active-issuer count, per
         // transition. All checks that can reject the call run before any state
@@ -1609,7 +1606,6 @@ impl IssuerRegistryContract {
                 issuer_id_hash,
                 effective_ledger,
                 effective_timestamp: now,
-                reason_commitment,
                 updated_at: now,
                 epoch,
             }
@@ -1618,7 +1614,6 @@ impl IssuerRegistryContract {
                 issuer_id_hash,
                 effective_ledger,
                 effective_timestamp: now,
-                reason_commitment,
                 updated_at: now,
                 epoch,
             }
@@ -1627,7 +1622,6 @@ impl IssuerRegistryContract {
                 issuer_id_hash,
                 effective_ledger,
                 effective_timestamp: now,
-                reason_commitment,
                 updated_at: now,
                 epoch,
             }

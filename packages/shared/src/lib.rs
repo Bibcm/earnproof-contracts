@@ -47,6 +47,15 @@ pub const MIGRATION_STATUS_VERSION: u32 = 1;
 /// Maximum number of records a single migration invocation may commit.
 pub const MAX_MIGRATION_BATCH: u32 = 100;
 
+/// Maximum number of proofs a single batch registration or batch revocation
+/// call may contain. Bounded not just by CPU/memory but by Soroban's
+/// per-invocation ledger footprint limit (100 entries in this environment):
+/// each proof touches a persistent data entry and its TTL entry, and a
+/// batch revocation touching state written by prior calls was measured to
+/// exceed that footprint limit at 25. 20 leaves comfortable headroom on
+/// both the registration and revocation paths.
+pub const MAX_PROOF_BATCH_SIZE: u32 = 20;
+
 /// Resumable progress marker shared by every contract upgrade path.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -405,6 +414,28 @@ pub enum ProofError {
     /// Distinct from unsupported schema — the input itself is invalid.
     /// Recovery: validate input against the schema before resubmitting.
     MalformedInput = 310,
+    /// A batch operation was given zero entries or more than
+    /// `MAX_PROOF_BATCH_SIZE` entries.
+    /// Recovery: split the batch into chunks of at most `MAX_PROOF_BATCH_SIZE`.
+    InvalidBatchSize = 311,
+    /// `register_proof_with_activation` was given an `activates_at` at or
+    /// after `expires_at`, so the proof could never be valid.
+    /// Recovery: choose an activation time strictly before the expiration.
+    InvalidActivationTime = 312,
+    /// `open_dispute` was called for a proof that already has an `Open`
+    /// dispute. Recovery: withdraw, resolve, or reject the existing dispute
+    /// before opening a new one — retrying the identical request will not
+    /// help, since the dispute is cleared by a different call, not by this
+    /// one succeeding on its own.
+    DisputeAlreadyOpen = 313,
+    /// `withdraw_dispute`, `resolve_dispute`, or `reject_dispute` referenced
+    /// a proof with no dispute record.
+    /// Recovery: open a dispute first, or confirm the proof id.
+    DisputeNotFound = 314,
+    /// A dispute transition was attempted on a dispute that is not `Open`
+    /// (already withdrawn, resolved, or rejected).
+    /// Recovery: read the dispute's current status; it is terminal.
+    DisputeNotOpen = 315,
 }
 
 /// Fixed capacity of the protocol-config change-history ring. Once this many
@@ -459,6 +490,7 @@ pub enum PauseScope {
     Revocation,
     Upgrade,
     Upgrades,
+    Disputes,
 }
 
 #[contracttype]
@@ -474,34 +506,6 @@ pub enum IssuerStatus {
 pub enum ProofStatus {
     Active,
     Revoked,
-}
-
-/// Structured proof validity outcome.
-///
-/// A single boolean (`is_valid_proof`) cannot distinguish why a proof is
-/// invalid. `ProofValidity` maps every invalid state to exactly one primary
-/// reason, evaluated in a documented, deterministic order (see
-/// `ProofRegistryContract::proof_validity`):
-///
-/// 1. `Unknown`         — no record exists for the given id.
-/// 2. `Revoked`         — the record's status is `Revoked`.
-/// 3. `Expired`         — the record's `expires_at` is at or before now.
-/// 4. `IssuerInactive`  — the issuing address is no longer active.
-/// 5. `SchemaDeprecated`— the record's schema version is no longer approved.
-/// 6. `Valid`           — none of the above; the proof is currently valid.
-///
-/// When several invalid conditions hold at once, the earliest one in this
-/// order is the primary reason. The variants are ordered so the canonical
-/// precedence is also the declaration order.
-#[contracttype]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ProofValidity {
-    Valid,
-    Unknown,
-    Revoked,
-    Expired,
-    IssuerInactive,
-    SchemaDeprecated,
 }
 
 /// Stores temporal metadata for an upgrade approval.
@@ -574,6 +578,133 @@ pub struct ProofRecord {
     /// Ledger sequence at which this proof was created (registered).
     /// [`LEDGER_SEQUENCE_UNSET`] marks a legacy record predating this field.
     pub created_ledger: u32,
+    /// Ledger timestamp at or after which this proof is considered active.
+    /// `0` means the proof was registered without a delay and is active
+    /// immediately (subject to `status` and `expires_at` as before). This
+    /// field is fixed at registration and is never mutated afterward — there
+    /// is no operation that moves it, earlier or later.
+    pub activates_at: u64,
+}
+
+/// The full validity state of a proof, distinguishing every reason a proof
+/// might not currently verify from the single boolean `is_valid_proof`
+/// returns.
+///
+/// Two independent queries return this type, each populating a different
+/// subset of variants:
+///
+/// - [`ProofRegistryContract::get_proof_validity`] performs only
+///   locally-checkable comparisons against the stored record (status,
+///   `activates_at`, `expires_at`) and reports one of `Active`, `Pending`,
+///   `Revoked`, `Expired`, or `NotFound`.
+/// - [`ProofRegistryContract::proof_validity`] additionally resolves the
+///   issuer-registry and protocol-config dependencies to check whether the
+///   issuer is still active and the schema version still approved,
+///   evaluated in a documented, deterministic order so that when several
+///   invalid conditions hold at once the earliest is the reported primary
+///   reason: `Unknown` (no record), `Revoked`, `Expired`,
+///   `IssuerInactive`, `SchemaDeprecated`, then `Valid`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProofValidity {
+    /// `status == Active`, `activates_at` has been reached, and `expires_at`
+    /// has not.
+    Active,
+    /// Registered and not revoked, but the ledger has not yet reached
+    /// `activates_at`. Carries that timestamp (`Pending(activates_at)`) so a
+    /// caller can know when to check again.
+    Pending(u64),
+    /// `status == Revoked`. Terminal: a revoked proof never becomes valid
+    /// again, including one revoked while still pending.
+    Revoked,
+    /// Active and past its activation time, but at or after `expires_at`.
+    Expired,
+    /// No record exists for this proof id.
+    NotFound,
+    /// Returned by `proof_validity` instead of [`Self::NotFound`] when no
+    /// record exists, or when the contract's dependency addresses cannot be
+    /// resolved and validity cannot be asserted.
+    Unknown,
+    /// Returned by `proof_validity`: the record exists, is unexpired and
+    /// unrevoked, but its issuing address is no longer active.
+    IssuerInactive,
+    /// Returned by `proof_validity`: the record exists, is unexpired and
+    /// unrevoked, and its issuer is active, but its schema version is no
+    /// longer approved.
+    SchemaDeprecated,
+    /// Returned by `proof_validity`: none of the above conditions hold.
+    Valid,
+}
+
+/// One entry of a bounded batch registration request.
+///
+/// Mirrors the per-proof arguments of `register_proof` minus `issuer_address`,
+/// since a batch registers proofs for a single authorized issuer.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProofRegistrationInput {
+    pub proof_id_hash: BytesN<32>,
+    pub commitment_hash: BytesN<32>,
+    pub schema_version: u32,
+    pub expires_at: u64,
+}
+
+/// Lifecycle state of a proof dispute. Terminal once `Withdrawn`, `Resolved`,
+/// or `Rejected`: none of those transitions back to `Open`, and a new
+/// dispute can only be opened once the previous one has reached one of them.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum DisputeStatus {
+    /// Under review. The only status a proof may have at most one of at a
+    /// time.
+    Open,
+    /// Withdrawn by whoever opened it, before any resolution.
+    Withdrawn,
+    /// Resolved by the admin in the disputant's favor.
+    Resolved,
+    /// Rejected by the admin as without merit.
+    Rejected,
+}
+
+/// Coarse category of who took a dispute action, recorded alongside the
+/// address itself so an indexer can distinguish "the issuer disputed their
+/// own proof" from "a third party disputed it" without re-deriving it from
+/// other contract state.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum DisputeActorClass {
+    /// The address is the proof's own recorded issuer.
+    Issuer,
+    /// The address is the proof-registry contract's admin.
+    Admin,
+    /// Any other address.
+    ThirdParty,
+}
+
+/// Bounded, on-chain dispute state for one proof.
+///
+/// Deliberately does not store raw evidence or a free-form reason: only a
+/// commitment hash to evidence held off-chain, mirroring how issuer-registry
+/// records a `reason_commitment` rather than the reason text itself. Dispute
+/// status is tracked independently of `ProofRecord.status`: opening,
+/// resolving, or rejecting a dispute never changes a proof's validity or
+/// revocation state, and revoking or expiring a proof never changes its
+/// dispute state.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisputeRecord {
+    pub proof_id_hash: BytesN<32>,
+    /// Hash of off-chain evidence. Never the evidence itself.
+    pub evidence_commitment: BytesN<32>,
+    pub status: DisputeStatus,
+    pub opened_by: Address,
+    pub opened_by_class: DisputeActorClass,
+    pub opened_at: u64,
+    /// Address that produced the current `status` — the opener while still
+    /// `Open`, or whoever withdrew/resolved/rejected it.
+    pub updated_by: Address,
+    pub updated_by_class: DisputeActorClass,
+    pub updated_at: u64,
 }
 
 #[contracttype]

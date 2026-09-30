@@ -53,32 +53,31 @@ const UPDATES: [Update; 7] = [
     Update::RevokeIssuer,
 ];
 
-fn apply(deployment: &Deployment, update: Update, step: usize) {
-    let pid = hash(&deployment.env, 0x20u8.wrapping_add(step as u8));
+fn apply(deployment: &Deployment, update: Update, _step: usize) {
     let reason = soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]);
     match update {
-        Update::Pause => deployment.config.pause(&pid),
-        Update::Unpause => deployment.config.unpause(&pid),
+        Update::Pause => deployment.config.pause(),
+        Update::Unpause => deployment.config.unpause(),
         Update::DeprecateSchema => deployment
             .config
-            .deprecate_schema_version(&pid, &APPROVED_SCHEMA),
+            .deprecate_schema_version(&APPROVED_SCHEMA),
         Update::ApproveSchema => deployment
             .config
-            .approve_schema_version(&pid, &APPROVED_SCHEMA),
+            .approve_schema_version(&APPROVED_SCHEMA),
         Update::SuspendIssuer => {
             deployment
                 .issuers
-                .suspend_issuer(&pid, &deployment.issuer_id, &reason)
+                .suspend_issuer(&deployment.issuer_id, &reason)
         }
         Update::ReactivateIssuer => {
             deployment
                 .issuers
-                .reactivate_issuer(&pid, &deployment.issuer_id, &reason)
+                .reactivate_issuer(&deployment.issuer_id, &reason)
         }
         Update::RevokeIssuer => {
             deployment
                 .issuers
-                .revoke_issuer(&pid, &deployment.issuer_id, &reason)
+                .revoke_issuer(&deployment.issuer_id, &reason)
         }
     }
 }
@@ -230,11 +229,7 @@ fn a_dependency_change_during_a_failing_invocation_is_discarded() {
     });
     let racing =
         SelfPausingConfigClient::new(&deployment.env, &deployment.proofs.get_protocol_config());
-    deployment.issuers.suspend_issuer(
-        &hash(&deployment.env, 0x50),
-        &deployment.issuer_id,
-        &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
-    );
+    deployment.issuers.suspend_issuer(&deployment.issuer_id, &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]));
 
     let rejection = deployment.assert_rejected_and_atomic(&hash(&deployment.env, 0xB6));
 
@@ -246,10 +241,6 @@ fn a_dependency_change_during_a_failing_invocation_is_discarded() {
 
     // The discarded change left nothing behind: once the issuer is active
     // again, registration works exactly as it would have before the failure.
-    deployment.issuers.reactivate_issuer(
-        &hash(&deployment.env, 0x51),
-        &deployment.issuer_id,
-        &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
-    );
+    deployment.issuers.reactivate_issuer(&deployment.issuer_id, &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]));
     deployment.register(0xB7);
 }

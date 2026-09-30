@@ -135,11 +135,9 @@ fn apply_to_contracts(deployment: &Deployment, op: Op, step: usize) -> bool {
     let issuer_id = issuer_id_hash(&deployment.env, 1);
     let fixture_proof = hash(&deployment.env, FIXTURE_PROOF);
 
-    let pid = hash(&deployment.env, 0x10u8.wrapping_add(step as u8));
-
     match op {
-        Pause => deployment.config.try_pause(&pid).is_ok(),
-        Unpause => deployment.config.try_unpause(&pid).is_ok(),
+        Pause => deployment.config.try_pause().is_ok(),
+        Unpause => deployment.config.try_unpause().is_ok(),
         RotateAdmin => {
             let next = Address::generate(&deployment.env);
             let r = deployment.config.try_nominate_admin(&next);
@@ -150,27 +148,15 @@ fn apply_to_contracts(deployment: &Deployment, op: Op, step: usize) -> bool {
         }
         SuspendIssuer => deployment
             .issuers
-            .try_suspend_issuer(
-                &pid,
-                &issuer_id,
-                &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
-            )
+            .try_suspend_issuer(&issuer_id, &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]))
             .is_ok(),
         ReactivateIssuer => deployment
             .issuers
-            .try_reactivate_issuer(
-                &pid,
-                &issuer_id,
-                &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
-            )
+            .try_reactivate_issuer(&issuer_id, &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]))
             .is_ok(),
         RevokeIssuer => deployment
             .issuers
-            .try_revoke_issuer(
-                &pid,
-                &issuer_id,
-                &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
-            )
+            .try_revoke_issuer(&issuer_id, &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]))
             .is_ok(),
         RevokeProof => deployment
             .proofs
@@ -298,7 +284,7 @@ fn a_paused_protocol_cannot_be_left_without_an_administrator() {
     // The stranding scenario: rotate repeatedly while paused, then confirm the
     // contract still names a reachable administrator and can still be unpaused.
     let deployment = deployment_with_fixture();
-    deployment.config.pause(&hash(&deployment.env, 0x10));
+    deployment.config.pause();
 
     let mut current = deployment.admin.clone();
     for _i in 0..5 {
@@ -313,7 +299,7 @@ fn a_paused_protocol_cannot_be_left_without_an_administrator() {
     }
 
     assert!(deployment.config.is_paused());
-    deployment.config.unpause(&hash(&deployment.env, 0x11));
+    deployment.config.unpause();
     assert!(
         !deployment.config.is_paused(),
         "a rotated, paused contract must remain recoverable"
@@ -327,7 +313,7 @@ fn initialize_is_rejected_on_an_already_initialized_deployment() {
     let deployment = deployment_with_fixture();
     let attacker = Address::generate(&deployment.env);
 
-    deployment.config.pause(&hash(&deployment.env, 0x10));
+    deployment.config.pause();
 
     assert!(deployment.config.try_initialize(&attacker).is_err());
     assert!(deployment.issuers.try_initialize(&attacker).is_err());
@@ -354,11 +340,11 @@ fn a_stale_caller_cannot_register_against_a_deprecated_schema() {
     // callers who noticed it.
     let deployment = deployment_with_fixture();
 
-    deployment.config.pause(&hash(&deployment.env, 0x10));
+    deployment.config.pause();
     deployment
         .config
-        .deprecate_schema_version(&hash(&deployment.env, 0x13), &APPROVED_SCHEMA);
-    deployment.config.unpause(&hash(&deployment.env, 0x11));
+        .deprecate_schema_version(&APPROVED_SCHEMA);
+    deployment.config.unpause();
 
     assert!(
         deployment
@@ -392,14 +378,10 @@ fn cross_contract_disagreement_resolves_in_favour_of_containment() {
         let issuer_id = issuer_id_hash(&deployment.env, 1);
 
         if revoke_issuer {
-            deployment.issuers.revoke_issuer(
-                &hash(&deployment.env, 0x14),
-                &issuer_id,
-                &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
-            );
+            deployment.issuers.revoke_issuer(&issuer_id, &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]));
         }
         if paused {
-            deployment.config.pause(&hash(&deployment.env, 0x10));
+            deployment.config.pause();
         }
 
         let accepted = deployment
@@ -429,12 +411,8 @@ fn rejected_operations_leave_no_partial_state() {
     // Drive into a state where several operations are rejected: the issuer is
     // revoked (blocking suspend/reactivate) and the fixture proof is revoked
     // (blocking a second revocation).
-    deployment.config.pause(&hash(&deployment.env, 0x10));
-    deployment.issuers.revoke_issuer(
-        &hash(&deployment.env, 0x14),
-        &issuer_id_hash(&deployment.env, 1),
-        &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
-    );
+    deployment.config.pause();
+    deployment.issuers.revoke_issuer(&issuer_id_hash(&deployment.env, 1), &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]));
     deployment
         .proofs
         .admin_revoke_proof(&hash(&deployment.env, FIXTURE_PROOF));

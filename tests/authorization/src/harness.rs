@@ -93,15 +93,14 @@ impl Deployment<'_> {
             (&admin,).into_val(&env),
         );
         config.initialize(&admin);
-        let schema_proposal = proposal_id_hash(&env, 0xFE);
         authorize(
             &env,
             &admin,
             &config_id,
             "approve_schema_version",
-            (&schema_proposal, &APPROVED_SCHEMA).into_val(&env),
+            (&APPROVED_SCHEMA,).into_val(&env),
         );
-        config.approve_schema_version(&schema_proposal, &APPROVED_SCHEMA);
+        config.approve_schema_version(&APPROVED_SCHEMA);
 
         // issuer-registry: initialize + register two active issuers.
         let issuer_id = issuer_id_hash(&env, 1);
@@ -233,26 +232,15 @@ impl Deployment<'_> {
     }
 
     pub fn suspend_issuer(&self, issuer_id: &BytesN<32>) {
-        let proposal_id = proposal_id_hash(&self.env, 0xFC);
         let reason_commitment = soroban_sdk::BytesN::from_array(&self.env, &[1u8; 32]);
         authorize(
             &self.env,
             &self.admin,
             &self.issuers_address,
             "suspend_issuer",
-            (
-                issuer_id,
-                &soroban_sdk::BytesN::from_array(&self.env, &[1u8; 32]),
-            )
-                .into_val(&self.env),
+            (issuer_id, &reason_commitment).into_val(&self.env),
         );
-        self.issuers.suspend_issuer(
-            issuer_id,
-            &soroban_sdk::BytesN::from_array(&self.env, &[1u8; 32]),
-            (&proposal_id, issuer_id, &reason_commitment).into_val(&self.env),
-        );
-        self.issuers
-            .suspend_issuer(&proposal_id, issuer_id, &reason_commitment);
+        self.issuers.suspend_issuer(issuer_id, &reason_commitment);
     }
 
     pub fn rotate_issuer_address(&self, issuer_id: &BytesN<32>, new_address: &Address) {
@@ -386,8 +374,4 @@ pub fn hash(env: &Env, discriminator: u8) -> BytesN<32> {
 /// scenario mixing the two cannot accidentally collide.
 pub fn issuer_id_hash(env: &Env, discriminator: u8) -> BytesN<32> {
     hash(env, 0x80 | discriminator)
-}
-
-pub fn proposal_id_hash(env: &Env, discriminator: u8) -> BytesN<32> {
-    hash(env, 0x40 | discriminator)
 }

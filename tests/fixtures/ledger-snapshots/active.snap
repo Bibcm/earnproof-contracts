@@ -1,7 +1,7 @@
 # scenario: active
-# revision: 10
-# reason: Storage migration, genesis, and upgrade timelock state updates
-# body-digest: a887b942b5987f6af4926f3a7e1ee5140bb0fe8cbe3e5d7316c8e571f0efdbe6
+# revision: 9
+# reason: merge upstream/develop: address rotation/revocation reasons, governance proposal ids, and timelock/upgrade-governance additions (round 2 conflict resolution)
+# body-digest: 04f3435cffa840185c5166aeb6c0ba91860484314ca5f1aa4c6631e574bfbccf
 
 [ledger]
 sequence = 1000
@@ -29,7 +29,7 @@ proof-registry instance [sym:IssuerRegistry] = addr:issuer-registry
 proof-registry instance [sym:ProtocolConfigVersion] = u32:1
 proof-registry instance [sym:ProtocolConfig] = addr:protocol-config
 proof-registry instance [sym:RegistryEpoch] = u32:1
-proof-registry persistent [sym:Proof, bytes:3333333333333333333333333333333333333333333333333333333333333333] = {sym:commitment_hash: bytes:4444444444444444444444444444444444444444444444444444444444444444, sym:created_at: u64:1000, sym:created_ledger: u32:1000, sym:expires_at: u64:2000, sym:issuer_address: addr:issuer, sym:proof_id_hash: bytes:3333333333333333333333333333333333333333333333333333333333333333, sym:revoked_at: u64:0, sym:schema_version: u32:1, sym:status: [sym:Active]}
+proof-registry persistent [sym:Proof, bytes:3333333333333333333333333333333333333333333333333333333333333333] = {sym:activates_at: u64:0, sym:commitment_hash: bytes:4444444444444444444444444444444444444444444444444444444444444444, sym:created_at: u64:1000, sym:created_ledger: u32:1000, sym:expires_at: u64:2000, sym:issuer_address: addr:issuer, sym:proof_id_hash: bytes:3333333333333333333333333333333333333333333333333333333333333333, sym:revoked_at: u64:0, sym:schema_version: u32:1, sym:status: [sym:Active]}
 proof-registry persistent [sym:ProofTtl, bytes:3333333333333333333333333333333333333333333333333333333333333333] = u32:501000
 protocol-config instance [sym:Admin] = addr:admin
 protocol-config instance [sym:ConfigHistoryTotal] = u32:1

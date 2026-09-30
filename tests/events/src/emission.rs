@@ -64,7 +64,7 @@ fn issuer_registry_initialize_emits_no_event() {
 #[test]
 fn pause_emits_paused_once_and_matches_state() {
     let deployment = Deployment::new();
-    let events = deployment.capture(|| deployment.config.pause(&hash(&deployment.env, 0x10)));
+    let events = deployment.capture(|| deployment.config.pause());
     let event = expect_single(&deployment.env, &events, "paused");
 
     let flag: bool = event
@@ -79,8 +79,8 @@ fn pause_emits_paused_once_and_matches_state() {
 #[test]
 fn unpause_emits_unpaused_once_and_matches_state() {
     let deployment = Deployment::new();
-    deployment.config.pause(&hash(&deployment.env, 0x10));
-    let events = deployment.capture(|| deployment.config.unpause(&hash(&deployment.env, 0x11)));
+    deployment.config.pause();
+    let events = deployment.capture(|| deployment.config.unpause());
     let event = expect_single(&deployment.env, &events, "unpaused");
 
     let flag: bool = event
@@ -114,7 +114,7 @@ fn approve_schema_version_emits_schema_approved_once() {
     let events = deployment.capture(|| {
         deployment
             .config
-            .approve_schema_version(&hash(&deployment.env, 0x13), &7)
+            .approve_schema_version(&7)
     });
     let event = expect_single(&deployment.env, &events, "schema_approved");
 
@@ -131,7 +131,7 @@ fn deprecate_schema_version_emits_schema_deprecated_once() {
     let events = deployment.capture(|| {
         deployment
             .config
-            .deprecate_schema_version(&hash(&deployment.env, 0x14), &APPROVED_SCHEMA)
+            .deprecate_schema_version(&APPROVED_SCHEMA)
     });
     let event = expect_single(&deployment.env, &events, "schema_deprecated");
 
@@ -197,11 +197,7 @@ fn update_issuer_emits_issuer_metadata_updated_once_and_matches_storage() {
 fn suspend_issuer_emits_issuer_suspended_once_and_matches_storage() {
     let deployment = Deployment::new();
     let events = deployment.capture(|| {
-        deployment.issuers.suspend_issuer(
-            &hash(&deployment.env, 0x15),
-            &deployment.issuer_id,
-            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
-        )
+        deployment.issuers.suspend_issuer(&deployment.issuer_id, &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]))
     });
     let event = expect_single(&deployment.env, &events, "issuer_suspended");
 
@@ -215,17 +211,9 @@ fn suspend_issuer_emits_issuer_suspended_once_and_matches_storage() {
 #[test]
 fn reactivate_issuer_emits_issuer_reactivated_once_and_matches_storage() {
     let deployment = Deployment::new();
-    deployment.issuers.suspend_issuer(
-        &hash(&deployment.env, 0x16),
-        &deployment.issuer_id,
-        &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
-    );
+    deployment.issuers.suspend_issuer(&deployment.issuer_id, &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]));
     let events = deployment.capture(|| {
-        deployment.issuers.reactivate_issuer(
-            &hash(&deployment.env, 0x17),
-            &deployment.issuer_id,
-            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
-        )
+        deployment.issuers.reactivate_issuer(&deployment.issuer_id, &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]))
     });
     let event = expect_single(&deployment.env, &events, "issuer_reactivated");
 
@@ -240,11 +228,7 @@ fn reactivate_issuer_emits_issuer_reactivated_once_and_matches_storage() {
 fn revoke_issuer_emits_issuer_revoked_once_and_matches_storage() {
     let deployment = Deployment::new();
     let events = deployment.capture(|| {
-        deployment.issuers.revoke_issuer(
-            &hash(&deployment.env, 0x18),
-            &deployment.issuer_id,
-            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
-        )
+        deployment.issuers.revoke_issuer(&deployment.issuer_id, &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]))
     });
     let event = expect_single(&deployment.env, &events, "issuer_revoked");
 
@@ -364,7 +348,7 @@ fn admin_revoke_proof_emits_proof_revoked_with_by_admin_true() {
 #[test]
 fn a_rejected_registration_publishes_no_event_and_does_not_advance_the_epoch() {
     let deployment = Deployment::new();
-    deployment.config.pause(&hash(&deployment.env, 0x10));
+    deployment.config.pause();
     let epoch_before = deployment.proofs.get_registry_epoch();
     let expires_at = deployment.env.ledger().timestamp() + 100_000;
 
@@ -383,5 +367,49 @@ fn a_rejected_registration_publishes_no_event_and_does_not_advance_the_epoch() {
         deployment.proofs.get_registry_epoch(),
         epoch_before,
         "a rejected call must not advance the registry epoch"
+    );
+}
+
+#[test]
+fn proof_registry_emits_proof_registered_on_registration() {
+    // proof-registry publishes exactly one `proof_registered` event on a
+    // successful registration, carrying the registry epoch. Revocation
+    // publishes exactly one `proof_revoked` event of its own, carrying the
+    // advanced epoch and who revoked it.
+    let deployment = Deployment::new();
+
+    let register_events = deployment.capture(|| {
+        deployment.register_proof(0x11);
+    });
+    let from_registration: std::vec::Vec<_> = register_events
+        .iter()
+        .filter(|event| event.contract == deployment.proofs.address)
+        .collect();
+    assert_eq!(
+        from_registration.len(),
+        1,
+        "registration must emit exactly one proof-registry event"
+    );
+    assert!(
+        from_registration[0].is(&deployment.env, "proof_registered"),
+        "the registration event must be proof_registered"
+    );
+
+    let proof_id = deployment.register_proof(0x12);
+    let revoke_events = deployment.capture(|| {
+        deployment.proofs.admin_revoke_proof(&proof_id);
+    });
+    let from_revocation: std::vec::Vec<_> = revoke_events
+        .iter()
+        .filter(|event| event.contract == deployment.proofs.address)
+        .collect();
+    assert_eq!(
+        from_revocation.len(),
+        1,
+        "revocation must emit exactly one proof-registry event"
+    );
+    assert!(
+        from_revocation[0].is(&deployment.env, "proof_revoked"),
+        "the revocation event must be proof_revoked"
     );
 }

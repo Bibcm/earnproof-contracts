@@ -65,7 +65,6 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
             "issuer_id_hash",
             "effective_ledger",
             "effective_timestamp",
-            "reason_commitment",
             "updated_at",
             "epoch",
         ],
@@ -76,7 +75,6 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
             "issuer_id_hash",
             "effective_ledger",
             "effective_timestamp",
-            "reason_commitment",
             "updated_at",
             "epoch",
         ],
@@ -87,7 +85,6 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
             "issuer_id_hash",
             "effective_ledger",
             "effective_timestamp",
-            "reason_commitment",
             "updated_at",
             "epoch",
         ],
@@ -104,6 +101,10 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
     ),
     // proof-registry
     ("proof_registered", &["proof_id_hash", "epoch"]),
+    (
+        "proof_registered_with_payload",
+        &["proof_id_hash", "payload_len", "payload_hash", "epoch"],
+    ),
     ("proof_revoked", &["proof_id_hash", "by_admin", "epoch"]),
 ];
 

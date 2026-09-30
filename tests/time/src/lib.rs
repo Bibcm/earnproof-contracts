@@ -82,7 +82,7 @@ mod tests {
         let config_id = clock.env.register(ProtocolConfigContract, ());
         let config = ProtocolConfigContractClient::new(&clock.env, &config_id);
         config.initialize(&admin);
-        config.approve_schema_version(&bytes(&clock.env, 0x10), &1);
+        config.approve_schema_version(&1);
         let issuers_id = clock.env.register(IssuerRegistryContract, ());
         let issuers = IssuerRegistryContractClient::new(&clock.env, &issuers_id);
         issuers.initialize(&admin);
@@ -166,7 +166,7 @@ mod tests {
             ),
             Err(Ok(ProofError::InvalidSchemaVersion))
         );
-        fixture.config.pause(&bytes(&fixture.clock.env, 0x11));
+        fixture.config.pause();
         assert_eq!(
             fixture.proofs.try_register_proof(
                 &bytes(&fixture.clock.env, 7),
@@ -225,7 +225,7 @@ mod tests {
         let fixture = fixture();
         fixture
             .config
-            .deprecate_schema_version(&bytes(&fixture.clock.env, 0x12), &1);
+            .deprecate_schema_version(&1);
         assert_eq!(
             fixture.proofs.try_register_proof(
                 &bytes(&fixture.clock.env, 20),
@@ -244,10 +244,10 @@ mod tests {
         // Approve and deprecate at the same timestamp — no time passes.
         fixture
             .config
-            .approve_schema_version(&bytes(&fixture.clock.env, 0x13), &2);
+            .approve_schema_version(&2);
         fixture
             .config
-            .deprecate_schema_version(&bytes(&fixture.clock.env, 0x14), &2);
+            .deprecate_schema_version(&2);
         assert!(!fixture.config.is_schema_version_approved(&2));
         assert_eq!(
             fixture.proofs.try_register_proof(
@@ -268,7 +268,7 @@ mod tests {
         // Schema is deprecated after the proof was registered.
         fixture
             .config
-            .deprecate_schema_version(&bytes(&fixture.clock.env, 0x15), &1);
+            .deprecate_schema_version(&1);
         // The existing proof is still valid — deprecation only gates new registrations.
         assert!(fixture
             .proofs
@@ -311,7 +311,7 @@ mod tests {
         let config_id = clock.env.register(ProtocolConfigContract, ());
         let config = ProtocolConfigContractClient::new(&clock.env, &config_id);
         config.initialize(&admin);
-        config.approve_schema_version(&bytes(&clock.env, 0x16), &1);
+        config.approve_schema_version(&1);
         let issuers_id = clock.env.register(IssuerRegistryContract, ());
         let issuers = IssuerRegistryContractClient::new(&clock.env, &issuers_id);
         issuers.initialize(&admin);

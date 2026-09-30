@@ -111,9 +111,12 @@ fn per_record_namespaces_hold_one_entry_per_record() {
 
     assert_eq!(
         keys_in(env, &deployment.proofs_id, StorageClass::Persistent).len(),
-        12
+        13
     );
 
+    // Two schema versions, one scoped pause, one schema payload limit, and
+    // the bounded change-history ring entries plus allowed WASM, upgrade
+    // history, and upgrade approval metadata entries exercised below.
     assert_eq!(
         keys_in(env, &deployment.config_id, StorageClass::Persistent).len(),
         21

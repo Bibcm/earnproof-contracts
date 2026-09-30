@@ -1,6 +1,6 @@
 # scenario: initialized
-# revision: 10
-# reason: Storage migration, genesis, and upgrade timelock state updates
+# revision: 9
+# reason: merge upstream/develop: address rotation/revocation reasons, governance proposal ids, and timelock/upgrade-governance additions (round 2 conflict resolution)
 # body-digest: afa19b41ac87f026620231aeffbeef3252e8815e36c3f392fae4e32aebf22929
 
 [ledger]

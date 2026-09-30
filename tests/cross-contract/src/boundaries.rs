@@ -512,7 +512,7 @@ fn an_invalid_protocol_config_address_aborts_the_registration() {
     let config_id = env.register(protocol_config::ProtocolConfigContract, ());
     let config = protocol_config::ProtocolConfigContractClient::new(&env, &config_id);
     config.initialize(&admin);
-    config.approve_schema_version(&hash(&env, 0x10), &APPROVED_SCHEMA);
+    config.approve_schema_version(&APPROVED_SCHEMA);
 
     let issuers_id = env.register(issuer_registry::IssuerRegistryContract, ());
     let issuers = issuer_registry::IssuerRegistryContractClient::new(&env, &issuers_id);
@@ -550,7 +550,7 @@ fn an_invalid_issuer_registry_address_aborts_the_registration() {
     let config_id = env.register(protocol_config::ProtocolConfigContract, ());
     let config = protocol_config::ProtocolConfigContractClient::new(&env, &config_id);
     config.initialize(&admin);
-    config.approve_schema_version(&hash(&env, 0x10), &APPROVED_SCHEMA);
+    config.approve_schema_version(&APPROVED_SCHEMA);
 
     let issuers_id = env.register(issuer_registry::IssuerRegistryContract, ());
     let issuers = issuer_registry::IssuerRegistryContractClient::new(&env, &issuers_id);

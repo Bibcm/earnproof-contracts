@@ -59,7 +59,7 @@ fn setup_proof() -> (
     let admin = Address::from_str(&env, ADMIN);
     let issuer_address = Address::from_str(&env, ISSUER);
     protocol.initialize(&admin);
-    protocol.approve_schema_version(&bytes(&env, 0x10), &1);
+    protocol.approve_schema_version(&1);
     issuer_registry.initialize(&admin);
     issuer_registry.register_issuer(
         &bytes(&env, 9),
@@ -98,11 +98,10 @@ proptest! {
             };
 
             let before = client.get_issuer(&issuer_id);
-            let pid = bytes(&env, (0x10 + i) as u8);
             let success = try_op(&env, || match op_kind {
-                0 => { client.suspend_issuer(&pid, &issuer_id, &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32])); }
-                1 => { client.reactivate_issuer(&pid, &issuer_id, &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32])); }
-                _ => { client.revoke_issuer(&pid, &issuer_id, &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32])); }
+                0 => { client.suspend_issuer(&issuer_id, &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32])); }
+                1 => { client.reactivate_issuer(&issuer_id, &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32])); }
+                _ => { client.revoke_issuer(&issuer_id, &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32])); }
             });
             prop_assert_eq!(success, expected_success, "iteration {}", i);
 
@@ -184,12 +183,11 @@ proptest! {
         pauses in prop::collection::vec(any::<bool>(), 0..10),
     ) {
         let (env, proof, protocol, _issuer_registry, _admin, issuer_address, _base_time) = setup_proof();
-        for (i, pause) in pauses.into_iter().enumerate() {
-            let pid = bytes(&env, (0x10 + i) as u8);
+        for pause in pauses {
             if pause {
-                try_op(&env, || { protocol.pause(&pid); });
+                try_op(&env, || { protocol.pause(); });
             } else {
-                try_op(&env, || { protocol.unpause(&pid); });
+                try_op(&env, || { protocol.unpause(); });
             }
         }
 
@@ -223,8 +221,7 @@ proptest! {
         let mut current_admin = admin.clone();
         let mut approved = false;
 
-        for (i, op) in ops.into_iter().enumerate() {
-            let pid = bytes(&env, (0x10 + i) as u8);
+        for op in ops {
             match op % 2 {
                 0 => {
                     let new_admin = if current_admin == admin {
@@ -238,11 +235,11 @@ proptest! {
                 }
                 _ => {
                     if approved {
-                        let result = try_op(&env, || { client.deprecate_schema_version(&pid, &1); });
+                        let result = try_op(&env, || { client.deprecate_schema_version(&1); });
                         prop_assert!(result);
                         approved = false;
                     } else {
-                        let result = try_op(&env, || { client.approve_schema_version(&pid, &1); });
+                        let result = try_op(&env, || { client.approve_schema_version(&1); });
                         prop_assert!(result);
                         approved = true;
                     }
