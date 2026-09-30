@@ -161,7 +161,10 @@ fn an_uninitialized_protocol_config_fails_closed() {
 
     let rejection = deployment.assert_rejected_and_atomic(&hash(&deployment.env, 0xA5));
 
-    assert_eq!(rejection, Rejection::Typed(ProofError::UnsupportedSchema));
+    assert_eq!(
+        rejection,
+        Rejection::Typed(ProofError::SchemaVersionNotApproved)
+    );
 }
 
 #[test]

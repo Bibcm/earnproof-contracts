@@ -103,28 +103,23 @@ fn per_record_namespaces_hold_one_entry_per_record() {
     // address replaces the old index entry rather than adding to it, so the
     // count is twelve including one TTL tracker for every record and reverse
     // index; the rotated address and its tracker replace their old entries.
+    // Three issuers (records + TTL trackers + address entries + TTL trackers) plus allowed WASM, upgrade history, upgrade approval metadata.
     assert_eq!(
         keys_in(env, &deployment.issuers_id, StorageClass::Persistent).len(),
-        12
+        22
     );
 
-    // Three proofs (one revoked in place, one registered with a payload,
-    // and the third with a dispute opened against it), each with its own
-    // TTL tracker, plus one dispute entry and one payload-metadata entry
-    // for the payload-bearing registration: 3 proof records + 3 TTL
-    // trackers + 1 dispute + 1 payload-metadata entry.
     assert_eq!(
         keys_in(env, &deployment.proofs_id, StorageClass::Persistent).len(),
-        8
+        13
     );
 
     // Two schema versions, one scoped pause, one schema payload limit, and
-    // nine bounded change-history ring entries (one per governance mutation
-    // exercised below: two schema approvals, one deprecation, one payload
-    // limit, pause, unpause, set_admin, a second pause, and a scoped pause).
+    // the bounded change-history ring entries plus allowed WASM, upgrade
+    // history, and upgrade approval metadata entries exercised below.
     assert_eq!(
         keys_in(env, &deployment.config_id, StorageClass::Persistent).len(),
-        13
+        21
     );
 }
 

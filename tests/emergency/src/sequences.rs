@@ -140,34 +140,23 @@ fn apply_to_contracts(deployment: &Deployment, op: Op, step: usize) -> bool {
         Unpause => deployment.config.try_unpause().is_ok(),
         RotateAdmin => {
             let next = Address::generate(&deployment.env);
-            {
-                let r = deployment.config.try_nominate_admin(&next);
-                if r.is_ok() {
-                    let _ = deployment.config.try_accept_admin();
-                }
-                r.is_ok()
+            let r = deployment.config.try_nominate_admin(&next);
+            if r.is_ok() {
+                let _ = deployment.config.try_accept_admin();
             }
+            r.is_ok()
         }
         SuspendIssuer => deployment
             .issuers
-            .try_suspend_issuer(
-                &issuer_id,
-                &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
-            )
+            .try_suspend_issuer(&issuer_id, &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]))
             .is_ok(),
         ReactivateIssuer => deployment
             .issuers
-            .try_reactivate_issuer(
-                &issuer_id,
-                &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
-            )
+            .try_reactivate_issuer(&issuer_id, &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]))
             .is_ok(),
         RevokeIssuer => deployment
             .issuers
-            .try_revoke_issuer(
-                &issuer_id,
-                &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
-            )
+            .try_revoke_issuer(&issuer_id, &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]))
             .is_ok(),
         RevokeProof => deployment
             .proofs
@@ -298,7 +287,7 @@ fn a_paused_protocol_cannot_be_left_without_an_administrator() {
     deployment.config.pause();
 
     let mut current = deployment.admin.clone();
-    for _ in 0..5 {
+    for _i in 0..5 {
         let next = Address::generate(&deployment.env);
         deployment.config.nominate_admin(&next);
         deployment.config.accept_admin();
@@ -352,7 +341,9 @@ fn a_stale_caller_cannot_register_against_a_deprecated_schema() {
     let deployment = deployment_with_fixture();
 
     deployment.config.pause();
-    deployment.config.deprecate_schema_version(&APPROVED_SCHEMA);
+    deployment
+        .config
+        .deprecate_schema_version(&APPROVED_SCHEMA);
     deployment.config.unpause();
 
     assert!(
@@ -387,10 +378,7 @@ fn cross_contract_disagreement_resolves_in_favour_of_containment() {
         let issuer_id = issuer_id_hash(&deployment.env, 1);
 
         if revoke_issuer {
-            deployment.issuers.revoke_issuer(
-                &issuer_id,
-                &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
-            );
+            deployment.issuers.revoke_issuer(&issuer_id, &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]));
         }
         if paused {
             deployment.config.pause();
@@ -424,10 +412,7 @@ fn rejected_operations_leave_no_partial_state() {
     // revoked (blocking suspend/reactivate) and the fixture proof is revoked
     // (blocking a second revocation).
     deployment.config.pause();
-    deployment.issuers.revoke_issuer(
-        &issuer_id_hash(&deployment.env, 1),
-        &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
-    );
+    deployment.issuers.revoke_issuer(&issuer_id_hash(&deployment.env, 1), &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]));
     deployment
         .proofs
         .admin_revoke_proof(&hash(&deployment.env, FIXTURE_PROOF));

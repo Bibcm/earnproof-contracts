@@ -94,9 +94,9 @@ fn unpause_emits_unpaused_once_and_matches_state() {
 fn set_admin_emits_admin_changed_once_and_matches_state() {
     let deployment = Deployment::new();
     let successor = Address::generate(&deployment.env);
+    deployment.config.nominate_admin(&successor);
     let events = deployment.capture(|| {
-        deployment.config.nominate_admin(&successor);
-        deployment.config.accept_admin()
+        deployment.config.accept_admin();
     });
     let event = expect_single(&deployment.env, &events, "admin_transfer_accepted");
 
@@ -111,7 +111,11 @@ fn set_admin_emits_admin_changed_once_and_matches_state() {
 #[test]
 fn approve_schema_version_emits_schema_approved_once() {
     let deployment = Deployment::new();
-    let events = deployment.capture(|| deployment.config.approve_schema_version(&7));
+    let events = deployment.capture(|| {
+        deployment
+            .config
+            .approve_schema_version(&7)
+    });
     let event = expect_single(&deployment.env, &events, "schema_approved");
 
     let version: u32 = event
@@ -124,8 +128,11 @@ fn approve_schema_version_emits_schema_approved_once() {
 #[test]
 fn deprecate_schema_version_emits_schema_deprecated_once() {
     let deployment = Deployment::new();
-    let events =
-        deployment.capture(|| deployment.config.deprecate_schema_version(&APPROVED_SCHEMA));
+    let events = deployment.capture(|| {
+        deployment
+            .config
+            .deprecate_schema_version(&APPROVED_SCHEMA)
+    });
     let event = expect_single(&deployment.env, &events, "schema_deprecated");
 
     let version: u32 = event
@@ -190,10 +197,7 @@ fn update_issuer_emits_issuer_metadata_updated_once_and_matches_storage() {
 fn suspend_issuer_emits_issuer_suspended_once_and_matches_storage() {
     let deployment = Deployment::new();
     let events = deployment.capture(|| {
-        deployment.issuers.suspend_issuer(
-            &deployment.issuer_id,
-            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
-        )
+        deployment.issuers.suspend_issuer(&deployment.issuer_id, &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]))
     });
     let event = expect_single(&deployment.env, &events, "issuer_suspended");
 
@@ -207,15 +211,9 @@ fn suspend_issuer_emits_issuer_suspended_once_and_matches_storage() {
 #[test]
 fn reactivate_issuer_emits_issuer_reactivated_once_and_matches_storage() {
     let deployment = Deployment::new();
-    deployment.issuers.suspend_issuer(
-        &deployment.issuer_id,
-        &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
-    );
+    deployment.issuers.suspend_issuer(&deployment.issuer_id, &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]));
     let events = deployment.capture(|| {
-        deployment.issuers.reactivate_issuer(
-            &deployment.issuer_id,
-            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
-        )
+        deployment.issuers.reactivate_issuer(&deployment.issuer_id, &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]))
     });
     let event = expect_single(&deployment.env, &events, "issuer_reactivated");
 
@@ -230,10 +228,7 @@ fn reactivate_issuer_emits_issuer_reactivated_once_and_matches_storage() {
 fn revoke_issuer_emits_issuer_revoked_once_and_matches_storage() {
     let deployment = Deployment::new();
     let events = deployment.capture(|| {
-        deployment.issuers.revoke_issuer(
-            &deployment.issuer_id,
-            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
-        )
+        deployment.issuers.revoke_issuer(&deployment.issuer_id, &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]))
     });
     let event = expect_single(&deployment.env, &events, "issuer_revoked");
 

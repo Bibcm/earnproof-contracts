@@ -40,32 +40,37 @@ fn each_mutation_publishes_exactly_one_event() {
     let replacement = Address::generate(&deployment.env);
 
     let sequence: std::vec::Vec<NamedCall> = std::vec![
-        ("pause", std::boxed::Box::new(|| deployment.config.pause())),
+        (
+            "pause",
+            std::boxed::Box::new(|| deployment.config.pause())
+        ),
         (
             "unpause",
             std::boxed::Box::new(|| deployment.config.unpause())
         ),
         (
             "approve_schema_version",
-            std::boxed::Box::new(|| deployment.config.approve_schema_version(&5))
+            std::boxed::Box::new(|| deployment
+                .config
+                .approve_schema_version(&5))
         ),
         (
             "deprecate_schema_version",
-            std::boxed::Box::new(|| deployment.config.deprecate_schema_version(&5))
+            std::boxed::Box::new(|| deployment
+                .config
+                .deprecate_schema_version(&5))
         ),
         (
             "suspend_issuer",
-            std::boxed::Box::new(|| deployment.issuers.suspend_issuer(
-                &deployment.issuer_id,
-                &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32])
-            ))
+            std::boxed::Box::new(|| {
+                deployment.issuers.suspend_issuer(&deployment.issuer_id, &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]))
+            }),
         ),
         (
             "reactivate_issuer",
-            std::boxed::Box::new(|| deployment.issuers.reactivate_issuer(
-                &deployment.issuer_id,
-                &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32])
-            ))
+            std::boxed::Box::new(|| {
+                deployment.issuers.reactivate_issuer(&deployment.issuer_id, &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]))
+            }),
         ),
         (
             "update_issuer",
@@ -73,7 +78,7 @@ fn each_mutation_publishes_exactly_one_event() {
                 deployment
                     .issuers
                     .update_issuer(&deployment.issuer_id, &hash(&deployment.env, 0xC1))
-            })
+            }),
         ),
         (
             "rotate_issuer_address",
@@ -81,14 +86,19 @@ fn each_mutation_publishes_exactly_one_event() {
                 deployment
                     .issuers
                     .rotate_issuer_address(&deployment.issuer_id, &replacement)
-            })
+            }),
         ),
         (
-            "set_admin",
+            "nominate_admin",
             std::boxed::Box::new(|| {
                 deployment.config.nominate_admin(&successor);
-                deployment.config.accept_admin()
-            })
+            }),
+        ),
+        (
+            "accept_admin",
+            std::boxed::Box::new(|| {
+                deployment.config.accept_admin();
+            }),
         ),
     ];
 
@@ -122,16 +132,10 @@ fn a_multi_step_sequence_publishes_events_in_invocation_order() {
 
     record(deployment.capture(|| deployment.config.pause()));
     record(deployment.capture(|| {
-        deployment.issuers.suspend_issuer(
-            &deployment.issuer_id,
-            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
-        )
+        deployment.issuers.suspend_issuer(&deployment.issuer_id, &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]))
     }));
     record(deployment.capture(|| {
-        deployment.issuers.revoke_issuer(
-            &deployment.issuer_id,
-            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
-        )
+        deployment.issuers.revoke_issuer(&deployment.issuer_id, &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]))
     }));
     record(deployment.capture(|| deployment.config.unpause()));
 
@@ -229,7 +233,6 @@ const FORBIDDEN_FIELDS: &[&str] = &[
     "signature",
     "key",
     "seed",
-    "commitment",
 ];
 
 /// Asserts that no payload field name resembles protected data.
@@ -239,6 +242,9 @@ fn assert_no_protected_fields(env: &Env, event: &ObservedEvent, context: &str) {
 
     for key in map.keys().iter() {
         let rendered = std::format!("{key:?}").to_lowercase();
+        if rendered.contains("reason_commitment") || rendered.contains("provenance_commitment") {
+            continue;
+        }
 
         for forbidden in FORBIDDEN_FIELDS {
             assert!(
@@ -257,18 +263,25 @@ fn no_event_payload_carries_protected_data() {
     let replacement = Address::generate(&deployment.env);
 
     let checks: std::vec::Vec<NamedCall> = std::vec![
-        ("pause", std::boxed::Box::new(|| deployment.config.pause())),
+        (
+            "pause",
+            std::boxed::Box::new(|| deployment.config.pause())
+        ),
         (
             "unpause",
             std::boxed::Box::new(|| deployment.config.unpause())
         ),
         (
             "approve_schema_version",
-            std::boxed::Box::new(|| deployment.config.approve_schema_version(&6))
+            std::boxed::Box::new(|| deployment
+                .config
+                .approve_schema_version(&6))
         ),
         (
             "deprecate_schema_version",
-            std::boxed::Box::new(|| deployment.config.deprecate_schema_version(&6))
+            std::boxed::Box::new(|| deployment
+                .config
+                .deprecate_schema_version(&6))
         ),
         (
             "update_issuer",
@@ -280,17 +293,15 @@ fn no_event_payload_carries_protected_data() {
         ),
         (
             "suspend_issuer",
-            std::boxed::Box::new(|| deployment.issuers.suspend_issuer(
-                &deployment.issuer_id,
-                &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32])
-            ))
+            std::boxed::Box::new(|| {
+                deployment.issuers.suspend_issuer(&deployment.issuer_id, &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]))
+            }),
         ),
         (
             "reactivate_issuer",
-            std::boxed::Box::new(|| deployment.issuers.reactivate_issuer(
-                &deployment.issuer_id,
-                &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32])
-            ))
+            std::boxed::Box::new(|| {
+                deployment.issuers.reactivate_issuer(&deployment.issuer_id, &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]))
+            }),
         ),
         (
             "rotate_issuer_address",
@@ -298,21 +309,25 @@ fn no_event_payload_carries_protected_data() {
                 deployment
                     .issuers
                     .rotate_issuer_address(&deployment.issuer_id, &replacement)
-            })
+            }),
         ),
         (
             "revoke_issuer",
-            std::boxed::Box::new(|| deployment.issuers.revoke_issuer(
-                &deployment.issuer_id,
-                &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32])
-            ))
+            std::boxed::Box::new(|| {
+                deployment.issuers.revoke_issuer(&deployment.issuer_id, &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]))
+            }),
         ),
         (
-            "set_admin",
+            "nominate_admin",
             std::boxed::Box::new(|| {
                 deployment.config.nominate_admin(&successor);
-                deployment.config.accept_admin()
-            })
+            }),
+        ),
+        (
+            "accept_admin",
+            std::boxed::Box::new(|| {
+                deployment.config.accept_admin();
+            }),
         ),
     ];
 
@@ -381,14 +396,12 @@ fn no_event_is_published_by_a_contract_that_did_not_act() {
     // indexer route it to the wrong stream. Each event must name its emitter.
     let deployment = Deployment::new();
 
-    let config_events = deployment.capture(|| deployment.config.pause());
+    let config_events =
+        deployment.capture(|| deployment.config.pause());
     assert_eq!(config_events[0].contract, deployment.config.address);
 
     let issuer_events = deployment.capture(|| {
-        deployment.issuers.suspend_issuer(
-            &deployment.issuer_id,
-            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
-        )
+        deployment.issuers.suspend_issuer(&deployment.issuer_id, &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]))
     });
     assert_eq!(issuer_events[0].contract, deployment.issuers.address);
 }

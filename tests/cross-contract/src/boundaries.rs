@@ -340,7 +340,10 @@ fn an_unapproved_schema_is_rejected_after_the_pause_check_but_before_the_issuer_
         deployment.expiry(),
     );
 
-    assert_eq!(rejection, Rejection::Typed(ProofError::UnsupportedSchema));
+    assert_eq!(
+        rejection,
+        Rejection::Typed(ProofError::SchemaVersionNotApproved)
+    );
 }
 
 // ---------------------------------------------------------------------------

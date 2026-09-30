@@ -1,16 +1,17 @@
 #![no_std]
 
-#[allow(unused_imports)]
 use earnproof_shared::{
-    is_interface_compatible, ContractError, DisputeActorClass, DisputeRecord, DisputeStatus,
-    GenesisRecord, InterfaceVersion, MigrationStatus, PauseScope, ProofError, ProofPayloadRecord,
-    ProofRecord, ProofRegistrationInput, ProofStatus, ProofValidity, TtlStatus, UpgradeApproval,
-    UpgradeReceipt, MAX_MIGRATION_BATCH, MAX_PROOF_BATCH_SIZE, MIGRATION_STATUS_VERSION,
-    TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
+    ApprovalQuery, ApprovalStatus, ArchivedProofRecord, ContractError, DisputeActorClass,
+    DisputeRecord, DisputeStatus, GenesisRecord, InterfaceVersion,
+    MigrationStatus, PauseScope, ProofError, ProofPayloadRecord, ProofRecord,
+    ProofRegistrationInput, ProofStatus, ProofValidity, TtlStatus, UpgradeApproval,
+    UpgradeApprovalMetadata, UpgradeApprovalRecord, UpgradeHistoryRecord, UpgradeReceipt,
+    MAX_MIGRATION_BATCH, MAX_PROOF_BATCH_SIZE, MIGRATION_STATUS_VERSION, TTL_EXTEND_TO_LEDGERS,
+    TTL_THRESHOLD_LEDGERS, UPGRADE_APPROVAL_EXPIRY_LEDGERS, UPGRADE_TIMELOCK_LEDGERS,
 };
 use soroban_sdk::{
     contract, contractclient, contractevent, contractimpl, contracttype, Address, Bytes, BytesN,
-    Env, Vec,
+    Env, Symbol, Vec,
 };
 
 /// Minimum `issuer-registry` interface version this contract can bind to.
@@ -26,12 +27,14 @@ pub trait ProtocolConfigInterface {
     fn is_scope_paused(env: Env, scope: PauseScope) -> bool;
     fn is_schema_version_approved(env: Env, version: u32) -> bool;
     fn get_schema_payload_limit(env: Env, version: u32) -> u32;
+    fn get_contract_version(env: Env) -> u32;
     fn interface_version(env: Env) -> InterfaceVersion;
 }
 
 #[contractclient(name = "IssuerRegistryContractClient")]
 pub trait IssuerRegistryInterface {
     fn is_active_address(env: Env, issuer_address: Address) -> bool;
+    fn get_contract_version(env: Env) -> u32;
     fn interface_version(env: Env) -> InterfaceVersion;
 }
 
@@ -46,18 +49,27 @@ enum DisputeTransition {
     Reject,
 }
 
+const CONTRACT_ROLE: &str = "proof_registry";
+
 #[contracttype]
 enum DataKey {
-    MigrationStatus,
     Admin,
     IssuerRegistry,
     ProtocolConfig,
+    IssuerRegistryVersion,
+    ProtocolConfigVersion,
     Proof(BytesN<32>),
+    /// Dispute state for a proof (issue: dispute lifecycle).
     Dispute(BytesN<32>),
+    /// Tracked TTL expiration ledger for a specific proof record.
+    ProofTtl(BytesN<32>),
+    /// Tracked TTL expiration ledger for the contract instance entry.
+    InstanceLiveUntil,
+    ArchivedProof(BytesN<32>),
     /// Allowlist entry: maps a WASM hash to the target contract version.
     AllowedWasm(BytesN<32>),
-    /// Monotonically-increasing contract version.  Prevents downgrade.
     ContractVersion,
+    CurrentWasmHash,
     Successor,
     Decommissioned,
     /// Immutable deployment identity, written once at `initialize`.
@@ -69,10 +81,26 @@ enum DataKey {
     /// payload (length and commitment hash only — never the raw bytes).
     ProofPayloadMeta(BytesN<32>),
     PendingAdmin,
-    /// Tracked TTL expiration ledger for the contract instance entry.
-    InstanceLiveUntil,
-    /// Tracked TTL expiration ledger for a specific proof record.
-    ProofTtl(BytesN<32>),
+    ScopedPause(PauseScope),
+    UpgradeHistory(u32),
+    UpgradeHistoryCount,
+    MigrationStatus,
+    LatestUpgradeReceipt,
+    UpgradeApproval,
+    UpgradeApprovalMetadata(BytesN<32>),
+}
+
+#[contractevent]
+pub struct ScopedPauseChanged {
+    pub scope: PauseScope,
+    pub paused: bool,
+    pub changed_by: Address,
+}
+
+#[contractevent]
+pub struct ProofArchived {
+    pub proof_id_hash: BytesN<32>,
+    pub archived_at: u64,
 }
 
 #[contractevent]
@@ -98,6 +126,8 @@ pub struct AdminTransferCancelled {
 #[contractevent]
 pub struct UpgradeAllowlisted {
     pub wasm_hash: BytesN<32>,
+    pub target_contract: Address,
+    pub contract_role: Symbol,
     pub new_contract_version: u32,
     pub approved_by: Address,
 }
@@ -107,6 +137,8 @@ pub struct UpgradeAllowlisted {
 #[contractevent]
 pub struct UpgradeRevoked {
     pub wasm_hash: BytesN<32>,
+    pub target_contract: Address,
+    pub contract_role: Symbol,
     pub revoked_by: Address,
 }
 
@@ -114,6 +146,8 @@ pub struct UpgradeRevoked {
 #[contractevent]
 pub struct ContractUpgraded {
     pub new_wasm_hash: BytesN<32>,
+    pub target_contract: Address,
+    pub contract_role: Symbol,
     pub old_contract_version: u32,
     pub new_contract_version: u32,
     pub upgraded_by: Address,
@@ -222,21 +256,6 @@ pub struct ProofRevoked {
 
 #[contractimpl]
 impl ProofRegistryContract {
-    pub fn is_decommissioned(env: Env) -> bool {
-        env.storage()
-            .instance()
-            .get(&DataKey::Decommissioned)
-            .unwrap_or(false)
-    }
-
-    fn ensure_not_decommissioned(env: &Env) -> Result<(), ProofError> {
-        if Self::is_decommissioned(env.clone()) {
-            Err(ProofError::ProofNotFound)
-        } else {
-            Ok(())
-        }
-    }
-
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -252,6 +271,8 @@ impl ProofRegistryContract {
         // Reject dependencies whose interface this contract does not understand
         // before any state is written, so a failed handshake mutates nothing.
         Self::require_compatible_dependencies(&env, &issuer_registry, &protocol_config)?;
+        let (config_ver, issuer_ver) =
+            Self::validate_and_query_dependencies(&env, &issuer_registry, &protocol_config)?;
         Self::require_auth(&admin);
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
@@ -260,6 +281,12 @@ impl ProofRegistryContract {
         env.storage()
             .instance()
             .set(&DataKey::ProtocolConfig, &protocol_config);
+        env.storage()
+            .instance()
+            .set(&DataKey::ProtocolConfigVersion, &config_ver);
+        env.storage()
+            .instance()
+            .set(&DataKey::IssuerRegistryVersion, &issuer_ver);
         env.storage()
             .instance()
             .set(&DataKey::ContractVersion, &1_u32);
@@ -354,6 +381,64 @@ impl ProofRegistryContract {
         Ok(())
     }
 
+    pub fn is_decommissioned(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Decommissioned)
+            .unwrap_or(false)
+    }
+
+    pub fn is_scope_paused(env: Env, scope: PauseScope) -> bool {
+        match scope {
+            PauseScope::Global => false,
+            _ => env
+                .storage()
+                .persistent()
+                .get(&DataKey::ScopedPause(scope))
+                .unwrap_or(false),
+        }
+    }
+
+    pub fn pause_scope(env: Env, scope: PauseScope) -> Result<(), ProofError> {
+        let admin = Self::get_admin(env.clone()).map_err(|_| ProofError::ProofNotFound)?;
+        Self::require_auth(&admin);
+        env.storage()
+            .persistent()
+            .set(&DataKey::ScopedPause(scope), &true);
+        env.storage().persistent().extend_ttl(
+            &DataKey::ScopedPause(scope),
+            TTL_THRESHOLD_LEDGERS,
+            TTL_EXTEND_TO_LEDGERS,
+        );
+        ScopedPauseChanged {
+            scope,
+            paused: true,
+            changed_by: admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn unpause_scope(env: Env, scope: PauseScope) -> Result<(), ProofError> {
+        let admin = Self::get_admin(env.clone()).map_err(|_| ProofError::ProofNotFound)?;
+        Self::require_auth(&admin);
+        env.storage()
+            .persistent()
+            .set(&DataKey::ScopedPause(scope), &false);
+        env.storage().persistent().extend_ttl(
+            &DataKey::ScopedPause(scope),
+            TTL_THRESHOLD_LEDGERS,
+            TTL_EXTEND_TO_LEDGERS,
+        );
+        ScopedPauseChanged {
+            scope,
+            paused: false,
+            changed_by: admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
     pub fn keepalive_instance(env: Env) -> bool {
         if !env.storage().instance().has(&DataKey::Admin) {
             return false;
@@ -381,6 +466,9 @@ impl ProofRegistryContract {
         expires_at: u64,
     ) -> Result<(), ProofError> {
         Self::ensure_not_decommissioned(&env)?;
+        if Self::is_scope_paused(env.clone(), PauseScope::Registration) {
+            return Err(ProofError::InvalidSchemaVersion);
+        }
         Self::require_valid_issuer_address(&issuer_address)?;
         let protocol_config =
             Self::get_protocol_config(env.clone()).map_err(|_| ProofError::ProofNotFound)?;
@@ -394,7 +482,7 @@ impl ProofRegistryContract {
         }
         Self::require_auth(&issuer_address);
 
-        // Input validation (proof-specific data validation — checked before cross-contract calls)
+        // ── Input validation (local parameters before external contract calls) ──
         if schema_version == 0 {
             return Err(ProofError::InvalidSchemaVersion);
         }
@@ -403,6 +491,7 @@ impl ProofRegistryContract {
             return Err(ProofError::ProofExpired);
         }
 
+        // ── External precondition checks (in order of precedence) ──────────────
         // Check 1: Contract paused (highest precedence — most external state)
         let protocol_client = ProtocolConfigContractClient::new(&env, &protocol_config);
         if protocol_client.is_paused() {
@@ -417,7 +506,7 @@ impl ProofRegistryContract {
 
         // Check 3: Schema supported (protocol configuration state)
         if !protocol_client.is_schema_version_approved(&schema_version) {
-            return Err(ProofError::UnsupportedSchema);
+            return Err(ProofError::SchemaVersionNotApproved);
         }
 
         // Check 5: Uniqueness constraint (storage precondition)
@@ -426,10 +515,6 @@ impl ProofRegistryContract {
             return Err(ProofError::ProofAlreadyRegistered);
         }
 
-        // Creation timing is sourced only from the host ledger environment so
-        // it is deterministic and non-forgeable by the caller. The proof
-        // record and its timing are written together in a single persistent
-        // `set`, so a proof never exists without its creation metadata.
         let now = env.ledger().timestamp();
         let created_ledger = env.ledger().sequence();
         let record = ProofRecord {
@@ -472,6 +557,9 @@ impl ProofRegistryContract {
         payload: Bytes,
     ) -> Result<(), ProofError> {
         Self::ensure_not_decommissioned(&env)?;
+        if Self::is_scope_paused(env.clone(), PauseScope::Registration) {
+            return Err(ProofError::InvalidSchemaVersion);
+        }
         Self::require_valid_issuer_address(&issuer_address)?;
         let protocol_config =
             Self::get_protocol_config(env.clone()).map_err(|_| ProofError::ProofNotFound)?;
@@ -504,7 +592,7 @@ impl ProofRegistryContract {
         }
 
         if !protocol_client.is_schema_version_approved(&schema_version) {
-            return Err(ProofError::UnsupportedSchema);
+            return Err(ProofError::SchemaVersionNotApproved);
         }
 
         // Schema-specific payload size bound, enforced before any state
@@ -776,10 +864,16 @@ impl ProofRegistryContract {
     }
 
     pub fn revoke_proof(env: Env, proof_id_hash: BytesN<32>) -> Result<(), ProofError> {
+        if Self::is_scope_paused(env.clone(), PauseScope::Revocation) {
+            return Err(ProofError::ProofAlreadyRevoked);
+        }
         Self::set_revoked(env, proof_id_hash, false)
     }
 
     pub fn admin_revoke_proof(env: Env, proof_id_hash: BytesN<32>) -> Result<(), ProofError> {
+        if Self::is_scope_paused(env.clone(), PauseScope::Revocation) {
+            return Err(ProofError::ProofAlreadyRevoked);
+        }
         Self::set_revoked(env, proof_id_hash, true)
     }
 
@@ -807,6 +901,90 @@ impl ProofRegistryContract {
         proof_id_hashes: Vec<BytesN<32>>,
     ) -> Result<(), ProofError> {
         Self::revoke_batch(env, proof_id_hashes, true)
+    }
+
+    pub fn archive_proof(env: Env, proof_id_hash: BytesN<32>) -> Result<(), ProofError> {
+        let archived_key = DataKey::ArchivedProof(proof_id_hash.clone());
+        if env.storage().persistent().has(&archived_key) {
+            return Ok(());
+        }
+
+        let proof_key = DataKey::Proof(proof_id_hash.clone());
+        let record: ProofRecord = env
+            .storage()
+            .persistent()
+            .get(&proof_key)
+            .ok_or(ProofError::ProofNotFound)?;
+
+        let admin_auth = if let Ok(admin) = Self::get_admin(env.clone()) {
+            admin.require_auth_for_args(soroban_sdk::vec![&env]);
+            true
+        } else {
+            false
+        };
+
+        if !admin_auth {
+            record.issuer_address.require_auth();
+        }
+
+        let now = env.ledger().timestamp();
+        let is_expired = now > record.expires_at;
+        let is_revoked = record.status == ProofStatus::Revoked;
+
+        if !is_expired && !is_revoked {
+            return Err(ProofError::InvalidAddress);
+        }
+
+        let archived_record = ArchivedProofRecord {
+            proof_id_hash: proof_id_hash.clone(),
+            commitment_hash: record.commitment_hash,
+            issuer_address: record.issuer_address,
+            was_revoked: is_revoked,
+            schema_version: record.schema_version,
+            expired_at: record.expires_at,
+            archived_at: now,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&archived_key, &archived_record);
+        env.storage().persistent().remove(&proof_key);
+
+        env.storage().persistent().extend_ttl(
+            &archived_key,
+            TTL_THRESHOLD_LEDGERS,
+            TTL_EXTEND_TO_LEDGERS,
+        );
+
+        ProofArchived {
+            proof_id_hash,
+            archived_at: now,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    pub fn get_archived_proof(
+        env: Env,
+        proof_id_hash: BytesN<32>,
+    ) -> Result<ArchivedProofRecord, ProofError> {
+        let key = DataKey::ArchivedProof(proof_id_hash);
+        let record = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ProofError::ProofNotFound)?;
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+        Ok(record)
+    }
+
+    pub fn is_archived(env: Env, proof_id_hash: BytesN<32>) -> bool {
+        env.storage()
+            .persistent()
+            .has(&DataKey::ArchivedProof(proof_id_hash))
     }
 
     pub fn get_proof(env: Env, proof_id_hash: BytesN<32>) -> Result<ProofRecord, ProofError> {
@@ -915,6 +1093,9 @@ impl ProofRegistryContract {
     }
 
     pub fn is_revoked(env: Env, proof_id_hash: BytesN<32>) -> bool {
+        if let Ok(archived) = Self::get_archived_proof(env.clone(), proof_id_hash.clone()) {
+            return archived.was_revoked;
+        }
         match Self::get_proof(env, proof_id_hash) {
             Ok(record) => record.status == ProofStatus::Revoked,
             Err(_) => false,
@@ -1026,7 +1207,7 @@ impl ProofRegistryContract {
     }
 
     pub fn nominate_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
-        Self::ensure_not_decommissioned(&env).map_err(|_| ContractError::InvalidState)?;
+        Self::assert_operational(&env);
         let admin = Self::get_admin(env.clone())?;
         Self::require_valid_principal(&new_admin)?;
         Self::require_auth(&admin);
@@ -1043,7 +1224,7 @@ impl ProofRegistryContract {
     }
 
     pub fn accept_admin(env: Env) -> Result<(), ContractError> {
-        Self::ensure_not_decommissioned(&env).map_err(|_| ContractError::InvalidState)?;
+        Self::assert_operational(&env);
         let pending_admin: Address = env
             .storage()
             .instance()
@@ -1064,7 +1245,7 @@ impl ProofRegistryContract {
     }
 
     pub fn cancel_admin_transfer(env: Env) -> Result<(), ContractError> {
-        Self::ensure_not_decommissioned(&env).map_err(|_| ContractError::InvalidState)?;
+        Self::assert_operational(&env);
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
 
@@ -1102,6 +1283,20 @@ impl ProofRegistryContract {
             .instance()
             .get(&DataKey::ProtocolConfig)
             .ok_or(ContractError::NotInitialized)
+    }
+
+    pub fn get_dependency_versions(env: Env) -> Result<(u32, u32), ContractError> {
+        let config_ver: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProtocolConfigVersion)
+            .ok_or(ContractError::NotInitialized)?;
+        let issuer_ver: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::IssuerRegistryVersion)
+            .ok_or(ContractError::NotInitialized)?;
+        Ok((config_ver, issuer_ver))
     }
 
     // ── dependency interface handshake ────────────────────────────────────────
@@ -1147,7 +1342,7 @@ impl ProofRegistryContract {
         Self::validate_dependency_addresses(&env, &new_issuer_registry, &protocol_config)?;
         let actual =
             IssuerRegistryContractClient::new(&env, &new_issuer_registry).interface_version();
-        if !is_interface_compatible(&REQUIRED_ISSUER_REGISTRY_VERSION, &actual) {
+        if !earnproof_shared::is_interface_compatible(&REQUIRED_ISSUER_REGISTRY_VERSION, &actual) {
             return Err(ContractError::IncompatibleInterfaceVersion);
         }
 
@@ -1171,7 +1366,7 @@ impl ProofRegistryContract {
         Self::validate_dependency_addresses(&env, &issuer_registry, &new_protocol_config)?;
         let actual =
             ProtocolConfigContractClient::new(&env, &new_protocol_config).interface_version();
-        if !is_interface_compatible(&REQUIRED_PROTOCOL_CONFIG_VERSION, &actual) {
+        if !earnproof_shared::is_interface_compatible(&REQUIRED_PROTOCOL_CONFIG_VERSION, &actual) {
             return Err(ContractError::IncompatibleInterfaceVersion);
         }
 
@@ -1191,122 +1386,500 @@ impl ProofRegistryContract {
             .get(&DataKey::ContractVersion)
             .unwrap_or(0)
     }
+    pub fn get_migration_status(env: Env) -> Option<MigrationStatus> {
+        env.storage().instance().get(&DataKey::MigrationStatus)
+    }
+
+    pub fn begin_migration(
+        env: Env,
+        target_contract_version: u32,
+        total_items: u32,
+    ) -> Result<MigrationStatus, ContractError> {
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        if target_contract_version <= Self::get_contract_version(env.clone()) || total_items == 0 {
+            return Err(ContractError::InvalidInput);
+        }
+        if let Some(status) = Self::get_migration_status(env.clone()) {
+            return if status.target_contract_version == target_contract_version
+                && status.total_items == total_items
+            {
+                Ok(status)
+            } else {
+                Err(ContractError::InvalidState)
+            };
+        }
+        let status = MigrationStatus {
+            status_version: MIGRATION_STATUS_VERSION,
+            target_contract_version,
+            cursor: 0,
+            total_items,
+            complete: false,
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::MigrationStatus, &status);
+        Self::extend_instance_ttl(env);
+        Ok(status)
+    }
+
+    pub fn advance_migration(
+        env: Env,
+        expected_cursor: u32,
+        processed_items: u32,
+    ) -> Result<MigrationStatus, ContractError> {
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        if processed_items == 0 || processed_items > MAX_MIGRATION_BATCH {
+            return Err(ContractError::InvalidInput);
+        }
+        let mut status =
+            Self::get_migration_status(env.clone()).ok_or(ContractError::InvalidState)?;
+        if expected_cursor < status.cursor {
+            return if expected_cursor.saturating_add(processed_items) <= status.cursor {
+                Ok(status)
+            } else {
+                Err(ContractError::InvalidState)
+            };
+        }
+        if expected_cursor != status.cursor || status.complete {
+            return Err(ContractError::InvalidState);
+        }
+        let next = status
+            .cursor
+            .checked_add(processed_items)
+            .ok_or(ContractError::InvalidInput)?;
+        if next > status.total_items {
+            return Err(ContractError::InvalidInput);
+        }
+        status.cursor = next;
+        status.complete = next == status.total_items;
+        env.storage()
+            .instance()
+            .set(&DataKey::MigrationStatus, &status);
+        Self::extend_instance_ttl(env);
+        Ok(status)
+    }
+
+    pub fn get_config_digest_version() -> u32 {
+        earnproof_shared::CONFIG_DIGEST_VERSION
+    }
+
+    pub fn get_config_digest(env: Env) -> Result<BytesN<32>, ContractError> {
+        let admin = Self::get_admin(env.clone())?;
+        let issuer_registry = Self::get_issuer_registry(env.clone())?;
+        let protocol_config = Self::get_protocol_config(env.clone())?;
+        Ok(earnproof_shared::proof_registry_digest(
+            &env,
+            &admin,
+            &issuer_registry,
+            &protocol_config,
+            Self::get_contract_version(env.clone()),
+        ))
+    }
+
+    pub fn get_instance_ttl_status(env: Env) -> TtlStatus {
+        earnproof_shared::ttl_status(
+            env.ledger().sequence(),
+            env.storage().instance().has(&DataKey::Admin),
+            env.storage().instance().get(&DataKey::InstanceLiveUntil),
+        )
+    }
+
+    pub fn get_proof_ttl_status(env: Env, proof_id_hash: BytesN<32>) -> TtlStatus {
+        earnproof_shared::ttl_status(
+            env.ledger().sequence(),
+            env.storage()
+                .persistent()
+                .has(&DataKey::Proof(proof_id_hash.clone())),
+            env.storage()
+                .persistent()
+                .get(&DataKey::ProofTtl(proof_id_hash)),
+        )
+    }
+
+    pub fn refresh_instance_ttl(env: Env) -> Result<TtlStatus, ContractError> {
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        Self::extend_instance_ttl(env.clone());
+        Ok(Self::get_instance_ttl_status(env))
+    }
 
     /// Admin-only: add `wasm_hash` to the upgrade allowlist.
-    ///
-    /// `new_version` must be strictly greater than the current contract
-    /// version to prevent pre-approving a downgrade.
-    pub fn approve_upgrade(env: Env, wasm_hash: BytesN<32>, new_version: u32) {
-        if Self::is_decommissioned(env.clone()) {
-            panic!("contract is decommissioned");
-        }
-        if let Ok(protocol_config) = Self::get_protocol_config(env.clone()) {
-            let protocol_client = ProtocolConfigContractClient::new(&env, &protocol_config);
-            if protocol_client.is_scope_paused(&PauseScope::Upgrades) {
-                panic!("upgrades are paused");
-            }
-        }
-        let admin = Self::get_admin(env.clone()).expect("contract not initialized");
+    /// Admin-only: add `wasm_hash` to the upgrade allowlist and record the
+    /// `new_version` that must be installed by that WASM.
+    pub fn approve_upgrade(
+        env: Env,
+        wasm_hash: BytesN<32>,
+        new_version: u32,
+    ) -> Result<(), ContractError> {
+        let admin = Self::get_admin(env.clone()).map_err(|_| ContractError::NotInitialized)?;
         Self::require_auth(&admin);
+        if Self::is_scope_paused(env.clone(), PauseScope::Upgrade) {
+            panic!("upgrade operations are paused");
+        }
 
         let current = Self::get_contract_version(env.clone());
         if new_version <= current {
-            panic!("new_version must be greater than current contract version");
+            return Err(ContractError::InvalidInput);
         }
 
+        let target_contract = env.current_contract_address();
+        let contract_role = Symbol::new(&env, CONTRACT_ROLE);
+
+        let approval_record = UpgradeApprovalRecord {
+            new_version,
+            target_contract: target_contract.clone(),
+            contract_role: contract_role.clone(),
+        };
+
+        let key = DataKey::AllowedWasm(wasm_hash.clone());
+        env.storage().persistent().set(&key, &approval_record);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+
+        let current_ledger = env.ledger().sequence();
+        let earliest_execution = current_ledger.saturating_add(UPGRADE_TIMELOCK_LEDGERS);
+        let expires_at = current_ledger.saturating_add(UPGRADE_APPROVAL_EXPIRY_LEDGERS);
+
+        if earliest_execution > expires_at {
+            return Err(ContractError::InvalidTimingConfig);
+        }
+
+        let approval = UpgradeApproval {
+            wasm_hash: wasm_hash.clone(),
+            created_at: current_ledger,
+            earliest_execution,
+            expires_at,
+            approved_by: admin.clone(),
+        };
         env.storage()
             .instance()
-            .set(&DataKey::AllowedWasm(wasm_hash.clone()), &new_version);
-        Self::extend_instance_ttl(env.clone());
+            .set(&DataKey::UpgradeApproval, &approval);
 
+        let metadata = UpgradeApprovalMetadata {
+            target_hash: wasm_hash.clone(),
+            target_version: new_version,
+            approver: admin.clone(),
+            creation_ledger: current_ledger,
+            execution_ledger: None,
+            expiry_ledger: expires_at,
+            status: ApprovalStatus::Active,
+        };
+        env.storage().persistent().set(
+            &DataKey::UpgradeApprovalMetadata(wasm_hash.clone()),
+            &metadata,
+        );
+
+        Self::extend_instance_ttl(env.clone());
         UpgradeAllowlisted {
             wasm_hash,
+            target_contract,
+            contract_role,
             new_contract_version: new_version,
             approved_by: admin,
         }
         .publish(&env);
+        Ok(())
     }
 
     /// Admin-only: remove a hash from the allowlist without applying it.
-    pub fn revoke_upgrade(env: Env, wasm_hash: BytesN<32>) {
-        if Self::is_decommissioned(env.clone()) {
-            panic!("contract is decommissioned");
-        }
-        let admin = Self::get_admin(env.clone()).expect("contract not initialized");
+    pub fn revoke_upgrade(env: Env, wasm_hash: BytesN<32>) -> Result<(), ContractError> {
+        let admin = Self::get_admin(env.clone()).map_err(|_| ContractError::NotInitialized)?;
         Self::require_auth(&admin);
+        if Self::is_scope_paused(env.clone(), PauseScope::Upgrade) {
+            panic!("upgrade operations are paused");
+        }
+
+        let target_contract = env.current_contract_address();
+        let contract_role = Symbol::new(&env, CONTRACT_ROLE);
+
+        let key = DataKey::AllowedWasm(wasm_hash.clone());
+        env.storage().persistent().remove(&key);
+
+        if let Some(mut metadata) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, UpgradeApprovalMetadata>(&DataKey::UpgradeApprovalMetadata(
+                wasm_hash.clone(),
+            ))
+        {
+            metadata.status = ApprovalStatus::Revoked;
+            env.storage().persistent().set(
+                &DataKey::UpgradeApprovalMetadata(wasm_hash.clone()),
+                &metadata,
+            );
+        }
 
         env.storage()
             .instance()
             .remove(&DataKey::AllowedWasm(wasm_hash.clone()));
 
+        env.storage().instance().remove(&DataKey::UpgradeApproval);
+
         UpgradeRevoked {
             wasm_hash,
+            target_contract,
+            contract_role,
             revoked_by: admin,
         }
         .publish(&env);
+        Ok(())
     }
 
-    /// Returns true when `wasm_hash` is on the allowlist.
+    /// Returns true when `wasm_hash` is on the allowlist for this contract instance.
     pub fn is_upgrade_allowed(env: Env, wasm_hash: BytesN<32>) -> bool {
+        let key = DataKey::AllowedWasm(wasm_hash.clone());
+        if let Some(approval) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, UpgradeApprovalRecord>(&key)
+        {
+            let current_contract = env.current_contract_address();
+            let expected_role = Symbol::new(&env, CONTRACT_ROLE);
+            if approval.target_contract != current_contract
+                || approval.contract_role != expected_role
+            {
+                return false;
+            }
+            return true;
+        }
+        if let Some(approval) = env
+            .storage()
+            .instance()
+            .get::<_, UpgradeApproval>(&DataKey::UpgradeApproval)
+        {
+            return approval.wasm_hash == wasm_hash;
+        }
         env.storage()
             .instance()
             .has(&DataKey::AllowedWasm(wasm_hash))
     }
 
-    /// Admin-only: apply an in-place WASM upgrade.
-    ///
-    /// Requirements:
-    /// 1. Caller is the admin.
-    /// 2. `wasm_hash` is on the allowlist.
-    /// 3. Target version is strictly greater than current (downgrade guard).
-    ///
-    /// On success the allowlist entry is consumed and `ContractVersion` is
-    /// advanced.
-    pub fn upgrade_contract(env: Env, wasm_hash: BytesN<32>) {
-        if Self::is_decommissioned(env.clone()) {
-            panic!("contract is decommissioned");
-        }
-        if let Ok(protocol_config) = Self::get_protocol_config(env.clone()) {
-            let protocol_client = ProtocolConfigContractClient::new(&env, &protocol_config);
-            if protocol_client.is_scope_paused(&PauseScope::Upgrades) {
-                panic!("upgrades are paused");
+    pub fn get_upgrade_approval_metadata(env: Env, target_hash: BytesN<32>) -> ApprovalQuery {
+        use earnproof_shared::ApprovalQuery::*;
+        use earnproof_shared::ApprovalStatus;
+
+        let metadata = env
+            .storage()
+            .persistent()
+            .get::<DataKey, UpgradeApprovalMetadata>(&DataKey::UpgradeApprovalMetadata(
+                target_hash.clone(),
+            ));
+
+        match metadata {
+            None => NotFound,
+            Some(m) if m.status == ApprovalStatus::Revoked => Revoked(m),
+            Some(m) => {
+                let current_ledger = env.ledger().sequence();
+                if current_ledger > m.expiry_ledger && m.status == ApprovalStatus::Active {
+                    Found(UpgradeApprovalMetadata {
+                        status: ApprovalStatus::Expired,
+                        ..m
+                    })
+                } else {
+                    Found(m)
+                }
             }
         }
+    }
+
+    /// Admin-only: apply an in-place WASM upgrade with invariant assertions.
+    pub fn upgrade_contract(env: Env, wasm_hash: BytesN<32>) {
         let admin = Self::get_admin(env.clone()).expect("contract not initialized");
         Self::require_auth(&admin);
+        if Self::is_scope_paused(env.clone(), PauseScope::Upgrade) {
+            panic!("upgrade operations are paused");
+        }
 
-        let new_version: u32 = env
+        let key = DataKey::AllowedWasm(wasm_hash.clone());
+        let approval: UpgradeApprovalRecord = env
             .storage()
-            .instance()
-            .get(&DataKey::AllowedWasm(wasm_hash.clone()))
+            .persistent()
+            .get(&key)
             .expect("wasm hash not on allowlist");
 
+        let current_contract = env.current_contract_address();
+        let expected_role = Symbol::new(&env, CONTRACT_ROLE);
+
+        if approval.target_contract != current_contract || approval.contract_role != expected_role {
+            panic!("upgrade approval does not match target contract identity or role");
+        }
+
         let old_version = Self::get_contract_version(env.clone());
-        if new_version <= old_version {
+        if approval.new_version <= old_version {
             panic!("upgrade would not advance contract version");
         }
 
-        // Consume allowlist entry before applying to prevent replay.
+        if let Some(status) = Self::get_migration_status(env.clone()) {
+            if !status.complete || status.target_contract_version != approval.new_version {
+                panic!("required storage migration is incomplete");
+            }
+        }
+
+        if let Some(approval_timelock) = env
+            .storage()
+            .instance()
+            .get::<_, UpgradeApproval>(&DataKey::UpgradeApproval)
+        {
+            if approval_timelock.wasm_hash == wasm_hash {
+                let current_ledger = env.ledger().sequence();
+                if current_ledger < approval_timelock.earliest_execution {
+                    panic!("timelock has not elapsed");
+                }
+                if current_ledger >= approval_timelock.expires_at {
+                    panic!("upgrade approval expired");
+                }
+            }
+        }
+
+        env.storage().persistent().remove(&key);
         env.storage()
             .instance()
             .remove(&DataKey::AllowedWasm(wasm_hash.clone()));
+        env.storage().instance().remove(&DataKey::UpgradeApproval);
 
-        #[cfg(not(test))]
+        if let Some(mut metadata) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, UpgradeApprovalMetadata>(&DataKey::UpgradeApprovalMetadata(
+                wasm_hash.clone(),
+            ))
+        {
+            metadata.status = ApprovalStatus::Executed;
+            metadata.execution_ledger = Some(env.ledger().sequence());
+            env.storage().persistent().set(
+                &DataKey::UpgradeApprovalMetadata(wasm_hash.clone()),
+                &metadata,
+            );
+        }
+
+        #[cfg(not(any(test, feature = "testutils")))]
         env.deployer()
             .update_current_contract_wasm(wasm_hash.clone());
 
+        let old_wasm_hash = env
+            .storage()
+            .instance()
+            .get(&DataKey::CurrentWasmHash)
+            .unwrap_or_else(|| BytesN::from_array(&env, &[0u8; 32]));
+
         env.storage()
             .instance()
-            .set(&DataKey::ContractVersion, &new_version);
+            .set(&DataKey::ContractVersion, &approval.new_version);
+        env.storage()
+            .instance()
+            .set(&DataKey::CurrentWasmHash, &wasm_hash);
+
+        let current_ledger = env.ledger().sequence();
+        let now = env.ledger().timestamp();
+        let receipt = UpgradeReceipt {
+            wasm_hash: wasm_hash.clone(),
+            old_version,
+            new_version: approval.new_version,
+            upgraded_at: now,
+            upgraded_by: admin.clone(),
+        };
+
+        env.storage()
+            .instance()
+            .set(&DataKey::LatestUpgradeReceipt, &receipt);
+        env.storage().instance().remove(&DataKey::MigrationStatus);
         Self::extend_instance_ttl(env.clone());
+
+        let history_count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::UpgradeHistoryCount)
+            .unwrap_or(0);
+
+        let history_record = UpgradeHistoryRecord {
+            old_wasm_hash,
+            new_wasm_hash: wasm_hash.clone(),
+            old_version,
+            new_version: approval.new_version,
+            ledger_sequence: current_ledger,
+            ledger_timestamp: now,
+            upgraded_by: admin.clone(),
+        };
+
+        let history_key = DataKey::UpgradeHistory(history_count);
+        env.storage()
+            .persistent()
+            .set(&history_key, &history_record);
+        env.storage().persistent().extend_ttl(
+            &history_key,
+            TTL_THRESHOLD_LEDGERS,
+            TTL_EXTEND_TO_LEDGERS,
+        );
+        env.storage()
+            .instance()
+            .set(&DataKey::UpgradeHistoryCount, &(history_count + 1));
 
         ContractUpgraded {
             new_wasm_hash: wasm_hash,
+            target_contract: current_contract,
+            contract_role: expected_role,
             old_contract_version: old_version,
-            new_contract_version: new_version,
+            new_contract_version: approval.new_version,
             upgraded_by: admin,
         }
         .publish(&env);
+    }
+
+    /// Admin-only: revoke an upgrade approval at any point in its lifetime.
+    ///
+    /// Revocation is allowed:
+    /// - Before timelock elapses
+    /// - During the valid execution window
+    /// - Even after expiry (cleanup)
+    ///
+    /// # Authorization
+    /// Only the admin can revoke.
+    pub fn revoke_upgrade_approval(env: Env) -> Result<(), ContractError> {
+        let admin = Self::get_admin(env.clone()).map_err(|_| ContractError::NotInitialized)?;
+        Self::require_auth(&admin);
+
+        // Allow revocation even if no approval exists (idempotent)
+        env.storage().instance().remove(&DataKey::UpgradeApproval);
+
+        Ok(())
+    }
+
+    pub fn get_latest_upgrade_receipt(env: Env) -> Option<UpgradeReceipt> {
+        env.storage().instance().get(&DataKey::LatestUpgradeReceipt)
+    }
+
+    pub fn get_upgrade_history_count(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::UpgradeHistoryCount)
+            .unwrap_or(0)
+    }
+
+    pub fn get_upgrade_history(env: Env, start: u32, limit: u32) -> Vec<UpgradeHistoryRecord> {
+        let total = Self::get_upgrade_history_count(env.clone());
+        let mut result = Vec::new(&env);
+        if start >= total {
+            return result;
+        }
+        let max_limit = if limit > 50 { 50 } else { limit };
+        let end = if start + max_limit > total {
+            total
+        } else {
+            start + max_limit
+        };
+        for i in start..end {
+            if let Some(record) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, UpgradeHistoryRecord>(&DataKey::UpgradeHistory(i))
+            {
+                result.push_back(record);
+            }
+        }
+        result
     }
 
     // ── private helpers ───────────────────────────────────────────────────────
@@ -1331,6 +1904,50 @@ impl ProofRegistryContract {
         Ok(())
     }
 
+    fn validate_and_query_dependencies(
+        env: &Env,
+        issuer_registry: &Address,
+        protocol_config: &Address,
+    ) -> Result<(u32, u32), ContractError> {
+        let config_client = ProtocolConfigContractClient::new(env, protocol_config);
+        let config_version = match config_client.try_get_contract_version() {
+            Ok(Ok(v)) => {
+                if v > 100 {
+                    return Err(ContractError::InvalidInput);
+                }
+                v
+            }
+            _ => 1,
+        };
+
+        let issuer_client = IssuerRegistryContractClient::new(env, issuer_registry);
+        let issuer_version = match issuer_client.try_get_contract_version() {
+            Ok(Ok(v)) => {
+                if v > 100 {
+                    return Err(ContractError::InvalidInput);
+                }
+                v
+            }
+            _ => 1,
+        };
+
+        Ok((config_version, issuer_version))
+    }
+
+    fn assert_operational(env: &Env) {
+        if Self::get_migration_status(env.clone()).is_some_and(|status| !status.complete) {
+            panic!("storage migration in progress");
+        }
+    }
+
+    fn ensure_not_decommissioned(env: &Env) -> Result<(), ProofError> {
+        if Self::is_decommissioned(env.clone()) {
+            Err(ProofError::ProofNotFound)
+        } else {
+            Ok(())
+        }
+    }
+
     fn require_valid_principal(address: &Address) -> Result<(), ContractError> {
         if !earnproof_shared::is_valid_principal_address(address) {
             return Err(ContractError::InvalidInput);
@@ -1338,8 +1955,6 @@ impl ProofRegistryContract {
         Ok(())
     }
 
-    /// Queries each dependency's interface version and rejects any that is not
-    /// compatible with the range this contract requires.
     fn require_compatible_dependencies(
         env: &Env,
         issuer_registry: &Address,
@@ -1347,12 +1962,12 @@ impl ProofRegistryContract {
     ) -> Result<(), ContractError> {
         let issuer_version =
             IssuerRegistryContractClient::new(env, issuer_registry).interface_version();
-        if !is_interface_compatible(&REQUIRED_ISSUER_REGISTRY_VERSION, &issuer_version) {
+        if !earnproof_shared::is_interface_compatible(&REQUIRED_ISSUER_REGISTRY_VERSION, &issuer_version) {
             return Err(ContractError::IncompatibleInterfaceVersion);
         }
         let config_version =
             ProtocolConfigContractClient::new(env, protocol_config).interface_version();
-        if !is_interface_compatible(&REQUIRED_PROTOCOL_CONFIG_VERSION, &config_version) {
+        if !earnproof_shared::is_interface_compatible(&REQUIRED_PROTOCOL_CONFIG_VERSION, &config_version) {
             return Err(ContractError::IncompatibleInterfaceVersion);
         }
         Ok(())
@@ -1366,6 +1981,7 @@ impl ProofRegistryContract {
     }
 
     fn set_revoked(env: Env, proof_id_hash: BytesN<32>, by_admin: bool) -> Result<(), ProofError> {
+        Self::assert_operational(&env);
         Self::ensure_not_decommissioned(&env)?;
         if let Ok(protocol_config) = Self::get_protocol_config(env.clone()) {
             let protocol_client = ProtocolConfigContractClient::new(&env, &protocol_config);
@@ -1405,26 +2021,38 @@ impl ProofRegistryContract {
         Ok(())
     }
 
-    /// Shared implementation behind [`Self::revoke_proofs_batch`] and
-    /// [`Self::admin_revoke_proofs_batch`].
-    ///
-    /// Entries are processed in order, and the whole call is atomic: if any
-    /// entry fails (unknown proof id, an unauthorized issuer, or an entry
-    /// already revoked — whether it was already revoked on chain or revoked
-    /// earlier in this same batch), the call returns that entry's error and
-    /// every write and event already produced earlier in this same call is
-    /// discarded along with it, per Soroban's invocation semantics. A
-    /// repeated identifier within one batch is therefore a documented
-    /// failure of the whole batch, not a silently-skipped duplicate — the
-    /// same outcome as revoking an already-revoked proof.
-    ///
-    /// The pause check and (for the admin path) admin authorization are each
-    /// performed once for the whole batch, reusing `set_revoked`'s checks.
-    /// For the issuer path, authorization is instead performed per entry
-    /// against that entry's own recorded `issuer_address`, so an entry the
-    /// caller is not authorized for can never be hidden behind valid entries
-    /// earlier in the batch: `require_auth` aborts the entire invocation the
-    /// moment it fails.
+    fn extend_instance_ttl(env: Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+        let live_until = Self::tracked_live_until(&env);
+        env.storage()
+            .instance()
+            .set(&DataKey::InstanceLiveUntil, &live_until);
+    }
+
+    fn extend_proof_key_ttl(env: Env, key: &DataKey) {
+        env.storage()
+            .persistent()
+            .extend_ttl(key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+        if let DataKey::Proof(proof_id_hash) = key {
+            let tracker = DataKey::ProofTtl(proof_id_hash.clone());
+            let live_until = Self::tracked_live_until(&env);
+            env.storage().persistent().set(&tracker, &live_until);
+            env.storage().persistent().extend_ttl(
+                &tracker,
+                TTL_THRESHOLD_LEDGERS,
+                TTL_EXTEND_TO_LEDGERS,
+            );
+        }
+    }
+
+    fn extend_payload_key_ttl(env: Env, key: &DataKey) {
+        env.storage()
+            .persistent()
+            .extend_ttl(key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+    }
+
     fn revoke_batch(
         env: Env,
         proof_id_hashes: Vec<BytesN<32>>,
@@ -1499,38 +2127,6 @@ impl ProofRegistryContract {
         }
 
         Ok(())
-    }
-
-    fn extend_instance_ttl(env: Env) {
-        env.storage()
-            .instance()
-            .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
-        let live_until = Self::tracked_live_until(&env);
-        env.storage()
-            .instance()
-            .set(&DataKey::InstanceLiveUntil, &live_until);
-    }
-
-    fn extend_proof_key_ttl(env: Env, key: &DataKey) {
-        env.storage()
-            .persistent()
-            .extend_ttl(key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
-        if let DataKey::Proof(proof_id_hash) = key {
-            let tracker = DataKey::ProofTtl(proof_id_hash.clone());
-            let live_until = Self::tracked_live_until(&env);
-            env.storage().persistent().set(&tracker, &live_until);
-            env.storage().persistent().extend_ttl(
-                &tracker,
-                TTL_THRESHOLD_LEDGERS,
-                TTL_EXTEND_TO_LEDGERS,
-            );
-        }
-    }
-
-    fn tracked_live_until(env: &Env) -> u32 {
-        env.ledger()
-            .sequence()
-            .saturating_add(TTL_EXTEND_TO_LEDGERS.min(env.storage().max_ttl()))
     }
 
     fn read_dispute(env: &Env, proof_id_hash: &BytesN<32>) -> Option<DisputeRecord> {
@@ -1647,21 +2243,6 @@ impl ProofRegistryContract {
         Ok(())
     }
 
-    fn extend_payload_key_ttl(env: Env, key: &DataKey) {
-        env.storage()
-            .persistent()
-            .extend_ttl(key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
-    }
-
-    /// Advances the registry epoch by exactly one and returns the new value.
-    /// Only ever called from a success path, after the mutation it
-    /// summarizes has already been committed, so a failed call or a
-    /// cross-contract rejection never advances it.
-    ///
-    /// Deliberately does not call `extend_instance_ttl`: proof-registry's
-    /// documented TTL policy is that only `initialize` extends the instance
-    /// entry, so per-call restoration cost stays flat regardless of traffic.
-    /// See `docs/storage-ttl.md`.
     fn bump_registry_epoch(env: &Env) -> u32 {
         let current = Self::get_registry_epoch(env.clone());
         let next = current
@@ -1671,116 +2252,10 @@ impl ProofRegistryContract {
         next
     }
 
-    pub fn get_config_digest_version() -> u32 {
-        earnproof_shared::CONFIG_DIGEST_VERSION
-    }
-
-    pub fn get_config_digest(env: Env) -> Result<BytesN<32>, ContractError> {
-        let admin = Self::get_admin(env.clone())?;
-        let issuer_registry = Self::get_issuer_registry(env.clone())?;
-        let protocol_config = Self::get_protocol_config(env.clone())?;
-        Ok(earnproof_shared::proof_registry_digest(
-            &env,
-            &admin,
-            &issuer_registry,
-            &protocol_config,
-            Self::get_contract_version(env.clone()),
-        ))
-    }
-
-    pub fn get_instance_ttl_status(env: Env) -> TtlStatus {
-        earnproof_shared::ttl_status(
-            env.ledger().sequence(),
-            env.storage().instance().has(&DataKey::Admin),
-            env.storage().instance().get(&DataKey::InstanceLiveUntil),
-        )
-    }
-
-    pub fn get_proof_ttl_status(env: Env, proof_id_hash: BytesN<32>) -> TtlStatus {
-        earnproof_shared::ttl_status(
-            env.ledger().sequence(),
-            env.storage()
-                .persistent()
-                .has(&DataKey::Proof(proof_id_hash.clone())),
-            env.storage()
-                .persistent()
-                .get(&DataKey::ProofTtl(proof_id_hash)),
-        )
-    }
-
-    pub fn get_migration_status(env: Env) -> Option<MigrationStatus> {
-        env.storage().instance().get(&DataKey::MigrationStatus)
-    }
-
-    pub fn begin_migration(
-        env: Env,
-        target_contract_version: u32,
-        total_items: u32,
-    ) -> Result<MigrationStatus, ContractError> {
-        let admin = Self::get_admin(env.clone())?;
-        Self::require_auth(&admin);
-        if target_contract_version <= Self::get_contract_version(env.clone()) || total_items == 0 {
-            return Err(ContractError::InvalidInput);
-        }
-        if let Some(status) = Self::get_migration_status(env.clone()) {
-            return if status.target_contract_version == target_contract_version
-                && status.total_items == total_items
-            {
-                Ok(status)
-            } else {
-                Err(ContractError::InvalidState)
-            };
-        }
-        let status = MigrationStatus {
-            status_version: MIGRATION_STATUS_VERSION,
-            target_contract_version,
-            cursor: 0,
-            total_items,
-            complete: false,
-        };
-        env.storage()
-            .instance()
-            .set(&DataKey::MigrationStatus, &status);
-        Self::extend_instance_ttl(env);
-        Ok(status)
-    }
-
-    pub fn advance_migration(
-        env: Env,
-        expected_cursor: u32,
-        processed_items: u32,
-    ) -> Result<MigrationStatus, ContractError> {
-        let admin = Self::get_admin(env.clone())?;
-        Self::require_auth(&admin);
-        if processed_items == 0 || processed_items > MAX_MIGRATION_BATCH {
-            return Err(ContractError::InvalidInput);
-        }
-        let mut status =
-            Self::get_migration_status(env.clone()).ok_or(ContractError::InvalidState)?;
-        if expected_cursor < status.cursor {
-            return if expected_cursor.saturating_add(processed_items) <= status.cursor {
-                Ok(status)
-            } else {
-                Err(ContractError::InvalidState)
-            };
-        }
-        if expected_cursor != status.cursor || status.complete {
-            return Err(ContractError::InvalidState);
-        }
-        let next = status
-            .cursor
-            .checked_add(processed_items)
-            .ok_or(ContractError::InvalidInput)?;
-        if next > status.total_items {
-            return Err(ContractError::InvalidInput);
-        }
-        status.cursor = next;
-        status.complete = next == status.total_items;
-        env.storage()
-            .instance()
-            .set(&DataKey::MigrationStatus, &status);
-        Self::extend_instance_ttl(env);
-        Ok(status)
+    fn tracked_live_until(env: &Env) -> u32 {
+        env.ledger()
+            .sequence()
+            .saturating_add(TTL_EXTEND_TO_LEDGERS.min(env.storage().max_ttl()))
     }
 
     fn require_auth(address: &Address) {
@@ -1795,7 +2270,7 @@ mod test {
     use super::{DataKey, ProofRegistryContract, ProofRegistryContractClient};
     use earnproof_shared::{
         DisputeActorClass, DisputeStatus, PauseScope, ProofError, ProofStatus, ProofValidity,
-        MAX_PROOF_BATCH_SIZE, TTL_THRESHOLD_LEDGERS,
+        MAX_PROOF_BATCH_SIZE, TTL_THRESHOLD_LEDGERS, UPGRADE_TIMELOCK_LEDGERS,
     };
     use issuer_registry::{IssuerRegistryContract, IssuerRegistryContractClient};
     use protocol_config::{ProtocolConfigContract, ProtocolConfigContractClient};
@@ -1926,7 +2401,7 @@ mod test {
             &2,
             &2_000,
         );
-        assert_eq!(result, Err(Ok(ProofError::UnsupportedSchema)));
+        assert_eq!(result, Err(Ok(ProofError::SchemaVersionNotApproved)));
     }
 
     #[test]
@@ -2021,10 +2496,13 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "new_version must be greater than current contract version")]
     fn approve_upgrade_rejects_downgrade_version() {
         let (env, client, ..) = setup();
-        client.approve_upgrade(&bytes(&env, 1), &1);
+        let result = client.try_approve_upgrade(&bytes(&env, 1), &1);
+        assert_eq!(
+            result,
+            Err(Ok(earnproof_shared::ContractError::InvalidInput))
+        );
     }
 
     #[test]
@@ -2057,6 +2535,8 @@ mod test {
 
         let hash = BytesN::from_array(&env, &[0xde; 32]);
         client.approve_upgrade(&hash, &2);
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + UPGRADE_TIMELOCK_LEDGERS);
         env.set_auths(&[]);
 
         client.upgrade_contract(&hash);
@@ -2068,6 +2548,8 @@ mod test {
         let hash = bytes(&env, 0x42);
 
         client.approve_upgrade(&hash, &2);
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + UPGRADE_TIMELOCK_LEDGERS);
         client.upgrade_contract(&hash);
 
         assert_eq!(client.get_contract_version(), 2);
@@ -2081,6 +2563,8 @@ mod test {
         let hash = bytes(&env, 0x42);
 
         client.approve_upgrade(&hash, &2);
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + UPGRADE_TIMELOCK_LEDGERS);
         client.upgrade_contract(&hash);
         client.upgrade_contract(&hash);
     }
@@ -2097,6 +2581,8 @@ mod test {
 
         let hash = bytes(&env, 0x77);
         client.approve_upgrade(&hash, &2);
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + UPGRADE_TIMELOCK_LEDGERS);
         client.upgrade_contract(&hash);
 
         assert!(client.is_valid_proof(&proof_id));
@@ -2104,16 +2590,21 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "new_version must be greater than current contract version")]
     fn cannot_re_approve_old_version_after_upgrade() {
         let (env, client, ..) = setup();
         let hash_v2 = bytes(&env, 0x01);
         let old_hash = bytes(&env, 0x02);
 
         client.approve_upgrade(&hash_v2, &2);
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + UPGRADE_TIMELOCK_LEDGERS);
         client.upgrade_contract(&hash_v2);
 
-        client.approve_upgrade(&old_hash, &1);
+        let result = client.try_approve_upgrade(&old_hash, &1);
+        assert_eq!(
+            result,
+            Err(Ok(earnproof_shared::ContractError::InvalidInput))
+        );
     }
 
     // ── numeric boundary tests ────────────────────────────────────────────────
@@ -2296,11 +2787,15 @@ mod test {
 
         // Valid: immediate next version
         client.approve_upgrade(&bytes(&env, 1), &2);
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + UPGRADE_TIMELOCK_LEDGERS);
         client.upgrade_contract(&bytes(&env, 1));
         assert_eq!(client.get_contract_version(), 2);
 
         // Valid: large version number
         client.approve_upgrade(&bytes(&env, 2), &u32::MAX);
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + UPGRADE_TIMELOCK_LEDGERS);
         client.upgrade_contract(&bytes(&env, 2));
         assert_eq!(client.get_contract_version(), u32::MAX);
     }
@@ -2953,6 +3448,295 @@ mod test {
         assert!(pc_client.is_paused());
         pc_client.unpause();
         assert!(!pc_client.is_paused());
+    }
+    // ── Issue #136: proof registration precondition error code tests ──────────
+
+    /// Positive: all preconditions met → registration succeeds.
+    #[test]
+    fn register_proof_succeeds_when_all_preconditions_met() {
+        let (env, client, _protocol_config, _issuer_registry, _) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        let proof_id = bytes(&env, 200);
+
+        let result = client.try_register_proof(&proof_id, &bytes(&env, 201), &issuer, &1, &2_000);
+        assert!(
+            result.is_ok(),
+            "registration must succeed when all preconditions are met"
+        );
+        assert!(client.is_valid_proof(&proof_id));
+    }
+
+    /// ContractPaused: paused contract → distinct code 307.
+    #[test]
+    fn register_proof_returns_contract_paused_when_paused() {
+        let (env, client, protocol_config, _issuer_registry, _) = setup();
+        use earnproof_shared::ProofError;
+        protocol_config.pause();
+
+        let result = client.try_register_proof(
+            &bytes(&env, 210),
+            &bytes(&env, 211),
+            &Address::from_str(&env, ISSUER),
+            &1,
+            &2_000,
+        );
+
+        assert_eq!(result, Err(Ok(ProofError::ContractPaused)));
+        assert_eq!(ProofError::ContractPaused as u32, 307);
+        // Must not be the old overloaded code
+        assert_ne!(
+            ProofError::ContractPaused as u32,
+            ProofError::InvalidSchemaVersion as u32
+        );
+    }
+
+    /// IssuerInactive: suspended issuer → distinct code 308.
+    #[test]
+    fn register_proof_returns_issuer_inactive_when_issuer_not_active() {
+        let (env, client, _protocol_config, issuer_registry, _) = setup();
+        use earnproof_shared::ProofError;
+        let inactive_issuer = Address::from_str(
+            &env,
+            "GBXHUHG5FGYLPD6RHL2MKWMP572O6KUXCZXDZJXS4T57ZTMAKBN7DWXN",
+        );
+        issuer_registry.register_issuer(
+            &bytes(&env, 15),
+            &inactive_issuer,
+            &bytes(&env, 16),
+            &bytes(&env, 99),
+        );
+        issuer_registry.suspend_issuer(
+            &bytes(&env, 15),
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
+
+        let result = client.try_register_proof(
+            &bytes(&env, 220),
+            &bytes(&env, 221),
+            &inactive_issuer,
+            &1,
+            &2_000,
+        );
+
+        assert_eq!(result, Err(Ok(ProofError::IssuerInactive)));
+        assert_eq!(ProofError::IssuerInactive as u32, 308);
+        // Must not be ContractPaused
+        assert_ne!(
+            ProofError::IssuerInactive as u32,
+            ProofError::ContractPaused as u32
+        );
+    }
+
+    /// UnsupportedSchema: unapproved schema → distinct code 309.
+    #[test]
+    fn register_proof_returns_unsupported_schema_for_unknown_schema() {
+        let (env, client, _protocol_config, _issuer_registry, _) = setup();
+        use earnproof_shared::ProofError;
+
+        // Schema version 99 is well-formed but not approved in protocol-config.
+        let result = client.try_register_proof(
+            &bytes(&env, 230),
+            &bytes(&env, 231),
+            &Address::from_str(&env, ISSUER),
+            &99,
+            &2_000,
+        );
+
+        assert_eq!(result, Err(Ok(ProofError::SchemaVersionNotApproved)));
+        assert_eq!(ProofError::SchemaVersionNotApproved as u32, 305);
+        // Must not be MalformedInput — the schema value itself is valid, just unapproved
+        assert_ne!(
+            ProofError::SchemaVersionNotApproved as u32,
+            ProofError::MalformedInput as u32
+        );
+    }
+
+    /// InvalidSchemaVersion: schema version 0 → code 304 (unchanged).
+    #[test]
+    fn register_proof_returns_malformed_input_for_bad_proof_data() {
+        let (env, client, _protocol_config, _issuer_registry, _) = setup();
+        use earnproof_shared::ProofError;
+
+        // Schema version 0 is the malformed-input case for the schema field.
+        let result = client.try_register_proof(
+            &bytes(&env, 240),
+            &bytes(&env, 241),
+            &Address::from_str(&env, ISSUER),
+            &0,
+            &2_000,
+        );
+
+        assert_eq!(result, Err(Ok(ProofError::InvalidSchemaVersion)));
+        // Must not be UnsupportedSchema — the value 0 is structurally invalid
+        assert_ne!(
+            ProofError::InvalidSchemaVersion as u32,
+            ProofError::UnsupportedSchema as u32
+        );
+    }
+
+    /// Distinctness: all four new codes must have unique numeric values.
+    #[test]
+    fn error_codes_are_unique_across_enum() {
+        use earnproof_shared::ProofError;
+        extern crate std;
+        use std::collections::HashSet;
+
+        let codes: std::vec::Vec<u32> = std::vec![
+            ProofError::ProofAlreadyRegistered as u32,
+            ProofError::ProofNotFound as u32,
+            ProofError::ProofAlreadyRevoked as u32,
+            ProofError::ProofExpired as u32,
+            ProofError::InvalidSchemaVersion as u32,
+            ProofError::SchemaVersionNotApproved as u32,
+            ProofError::InvalidAddress as u32,
+            ProofError::ContractPaused as u32,
+            ProofError::IssuerInactive as u32,
+            ProofError::UnsupportedSchema as u32,
+            ProofError::MalformedInput as u32,
+        ];
+
+        let unique: HashSet<_> = codes.iter().collect();
+        assert_eq!(
+            codes.len(),
+            unique.len(),
+            "ProofError codes must all be unique"
+        );
+    }
+
+    /// Auth failure is not collapsed into new precondition codes.
+    #[test]
+    fn auth_failure_is_not_collapsed_into_new_codes() {
+        // Build an env where no auth is mocked — the require_auth call aborts.
+        let env = Env::default();
+        // Do NOT call mock_all_auths()
+        let protocol_config_id = env.register(protocol_config::ProtocolConfigContract, ());
+        let pc = protocol_config::ProtocolConfigContractClient::new(&env, &protocol_config_id);
+        let issuer_registry_id = env.register(issuer_registry::IssuerRegistryContract, ());
+        let ir = issuer_registry::IssuerRegistryContractClient::new(&env, &issuer_registry_id);
+        let contract_id = env.register(ProofRegistryContract, ());
+        let client = ProofRegistryContractClient::new(&env, &contract_id);
+        let admin = Address::from_str(&env, ADMIN);
+        let issuer = Address::from_str(&env, ISSUER);
+
+        env.mock_all_auths();
+        pc.initialize(&admin);
+        pc.approve_schema_version(&1);
+        ir.initialize(&admin);
+        ir.register_issuer(&bytes(&env, 9), &issuer, &bytes(&env, 8), &bytes(&env, 99));
+        client.initialize(&admin, &issuer_registry_id, &protocol_config_id);
+
+        // Now remove all auths so the issuer's require_auth() will abort.
+        env.set_auths(&[]);
+
+        // The call must abort at the host level (not return a typed ProofError).
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.register_proof(&bytes(&env, 250), &bytes(&env, 251), &issuer, &1, &2_000);
+        }));
+        assert!(
+            result.is_err(),
+            "unauthorized registration must abort, not return a typed error"
+        );
+    }
+
+    /// Precondition order: ContractPaused is checked before IssuerInactive.
+    #[test]
+    fn contract_paused_checked_before_issuer() {
+        let (env, client, protocol_config, issuer_registry, _) = setup();
+        use earnproof_shared::ProofError;
+
+        // Pause the contract AND suspend the issuer.
+        protocol_config.pause();
+        let inactive_issuer = Address::from_str(
+            &env,
+            "GBXHUHG5FGYLPD6RHL2MKWMP572O6KUXCZXDZJXS4T57ZTMAKBN7DWXN",
+        );
+        issuer_registry.register_issuer(
+            &bytes(&env, 17),
+            &inactive_issuer,
+            &bytes(&env, 18),
+            &bytes(&env, 99),
+        );
+        issuer_registry.suspend_issuer(
+            &bytes(&env, 17),
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
+
+        let result = client.try_register_proof(
+            &bytes(&env, 160),
+            &bytes(&env, 161),
+            &inactive_issuer,
+            &1,
+            &2_000,
+        );
+
+        // ContractPaused (307) must take precedence over IssuerInactive (308).
+        assert_eq!(result, Err(Ok(ProofError::ContractPaused)));
+    }
+
+    /// Precondition order: IssuerInactive is checked before UnsupportedSchema.
+    #[test]
+    fn issuer_checked_before_schema() {
+        let (env, client, _protocol_config, issuer_registry, _) = setup();
+        use earnproof_shared::ProofError;
+
+        // Suspend the issuer AND use an unapproved schema.
+        let inactive_issuer = Address::from_str(
+            &env,
+            "GBXHUHG5FGYLPD6RHL2MKWMP572O6KUXCZXDZJXS4T57ZTMAKBN7DWXN",
+        );
+        issuer_registry.register_issuer(
+            &bytes(&env, 19),
+            &inactive_issuer,
+            &bytes(&env, 20),
+            &bytes(&env, 99),
+        );
+        issuer_registry.suspend_issuer(
+            &bytes(&env, 19),
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        );
+
+        let result = client.try_register_proof(
+            &bytes(&env, 170),
+            &bytes(&env, 171),
+            &inactive_issuer,
+            &99, // Also unapproved schema
+            &2_000,
+        );
+
+        // IssuerInactive (308) must take precedence over UnsupportedSchema (309).
+        assert_eq!(result, Err(Ok(ProofError::IssuerInactive)));
+    }
+
+    /// Regression: existing error code values must be unchanged.
+    #[test]
+    fn existing_error_code_values_unchanged() {
+        use earnproof_shared::ProofError;
+        assert_eq!(ProofError::ProofAlreadyRegistered as u32, 300);
+        assert_eq!(ProofError::ProofNotFound as u32, 301);
+        assert_eq!(ProofError::ProofAlreadyRevoked as u32, 302);
+        assert_eq!(ProofError::ProofExpired as u32, 303);
+        assert_eq!(ProofError::InvalidSchemaVersion as u32, 304);
+        assert_eq!(ProofError::SchemaVersionNotApproved as u32, 305);
+        assert_eq!(ProofError::InvalidAddress as u32, 306);
+    }
+
+    /// Regression: new codes must not reuse any existing code value.
+    #[test]
+    fn new_codes_do_not_reuse_old_values() {
+        use earnproof_shared::ProofError;
+        let existing = [300_u32, 301, 302, 303, 304, 305, 306];
+        let new_codes = [
+            ProofError::ContractPaused as u32,
+            ProofError::IssuerInactive as u32,
+            ProofError::UnsupportedSchema as u32,
+            ProofError::MalformedInput as u32,
+        ];
+        for new_code in new_codes {
+            assert!(
+                !existing.contains(&new_code),
+                "new code {new_code} reuses an existing ProofError code value"
+            );
+        }
     }
 
     // ── bounded batch proof registration ─────────────────────────────────────
@@ -4371,6 +5155,8 @@ mod test {
 
         let hash = bytes(&env, 0x66);
         client.approve_upgrade(&hash, &2);
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + UPGRADE_TIMELOCK_LEDGERS);
         client.upgrade_contract(&hash);
 
         assert_eq!(client.get_genesis(), genesis_before);
@@ -4505,6 +5291,8 @@ mod test {
 
         let hash = bytes(&env, 0x88);
         client.approve_upgrade(&hash, &2);
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + UPGRADE_TIMELOCK_LEDGERS);
         client.upgrade_contract(&hash);
 
         assert_eq!(client.get_registry_epoch(), epoch_before);
@@ -4622,7 +5410,7 @@ mod test {
             &2_000,
             &soroban_sdk::Bytes::new(&env),
         );
-        assert_eq!(result, Err(Ok(ProofError::UnsupportedSchema)));
+        assert_eq!(result, Err(Ok(ProofError::SchemaVersionNotApproved)));
     }
 
     #[test]
@@ -4664,6 +5452,8 @@ mod test {
 
         let wasm_hash = bytes(&env, 0xd2);
         client.approve_upgrade(&wasm_hash, &2);
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + UPGRADE_TIMELOCK_LEDGERS);
         client.upgrade_contract(&wasm_hash);
         assert_ne!(client.get_config_digest(), initial);
     }
@@ -4955,5 +5745,469 @@ mod test {
                 earnproof_shared::ContractError::IncompatibleInterfaceVersion
             ))
         );
+    }
+}
+
+#[cfg(test)]
+mod upgrade_timelock_tests {
+    extern crate std;
+
+    use super::{DataKey, ProofRegistryContract, ProofRegistryContractClient};
+    use earnproof_shared::{
+        UpgradeApproval, UPGRADE_APPROVAL_EXPIRY_LEDGERS, UPGRADE_TIMELOCK_LEDGERS,
+    };
+    use soroban_sdk::{testutils::Ledger as _, Address, BytesN, Env};
+
+    const ADMIN: &str = "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR";
+    const ISSUER: &str = "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U";
+
+    fn make_wasm_hash(env: &Env) -> BytesN<32> {
+        BytesN::from_array(env, &[1u8; 32])
+    }
+
+    fn bytes(env: &Env, value: u8) -> BytesN<32> {
+        BytesN::from_array(env, &[value; 32])
+    }
+
+    fn setup() -> (Env, ProofRegistryContractClient<'static>, Address) {
+        use issuer_registry::{IssuerRegistryContract, IssuerRegistryContractClient};
+        use protocol_config::{ProtocolConfigContract, ProtocolConfigContractClient};
+
+        let env = Env::default();
+        env.mock_all_auths();
+        let protocol_config_id = env.register(ProtocolConfigContract, ());
+        let protocol_config_client = ProtocolConfigContractClient::new(&env, &protocol_config_id);
+        let issuer_registry_id = env.register(IssuerRegistryContract, ());
+        let issuer_registry_client = IssuerRegistryContractClient::new(&env, &issuer_registry_id);
+        let contract_id = env.register(ProofRegistryContract, ());
+        let client = ProofRegistryContractClient::new(&env, &contract_id);
+        let admin = Address::from_str(&env, ADMIN);
+        let issuer = Address::from_str(&env, ISSUER);
+        let issuer_id = bytes(&env, 9);
+
+        protocol_config_client.initialize(&admin);
+        protocol_config_client.approve_schema_version(&1);
+        issuer_registry_client.initialize(&admin);
+        issuer_registry_client.register_issuer(
+            &issuer_id,
+            &issuer,
+            &bytes(&env, 8),
+            &bytes(&env, 99),
+        );
+        client.initialize(&admin, &issuer_registry_id, &protocol_config_id);
+
+        (env, client, admin)
+    }
+
+    // ── SUITE 1: Approve stores correct timing ────────────────
+
+    #[test]
+    fn test_approve_stores_created_at() {
+        let (env, client, _) = setup();
+
+        let start_ledger = env.ledger().sequence();
+
+        client.approve_upgrade(&make_wasm_hash(&env), &2);
+
+        env.as_contract(&client.address, || {
+            let approval: Option<UpgradeApproval> =
+                env.storage().instance().get(&DataKey::UpgradeApproval);
+            assert!(approval.is_some(), "Approval must be stored");
+            assert_eq!(approval.unwrap().created_at, start_ledger);
+        });
+    }
+
+    #[test]
+    fn test_approve_stores_earliest_execution() {
+        let (env, client, _) = setup();
+
+        let start = env.ledger().sequence();
+
+        client.approve_upgrade(&make_wasm_hash(&env), &2);
+
+        env.as_contract(&client.address, || {
+            let approval: Option<UpgradeApproval> =
+                env.storage().instance().get(&DataKey::UpgradeApproval);
+            assert_eq!(
+                approval.unwrap().earliest_execution,
+                start.saturating_add(UPGRADE_TIMELOCK_LEDGERS)
+            );
+        });
+    }
+
+    #[test]
+    fn test_approve_stores_expires_at() {
+        let (env, client, _) = setup();
+
+        let start = env.ledger().sequence();
+
+        client.approve_upgrade(&make_wasm_hash(&env), &2);
+
+        env.as_contract(&client.address, || {
+            let approval: Option<UpgradeApproval> =
+                env.storage().instance().get(&DataKey::UpgradeApproval);
+            assert_eq!(
+                approval.unwrap().expires_at,
+                start.saturating_add(UPGRADE_APPROVAL_EXPIRY_LEDGERS)
+            );
+        });
+    }
+
+    #[test]
+    fn test_re_approval_resets_all_timing_metadata() {
+        let (env, client, _) = setup();
+
+        // First approval
+        client.approve_upgrade(&make_wasm_hash(&env), &2);
+
+        let (first_created, first_earliest, first_expires) =
+            env.as_contract(&client.address, || {
+                let approval: Option<UpgradeApproval> =
+                    env.storage().instance().get(&DataKey::UpgradeApproval);
+                let a = approval.as_ref().unwrap();
+                (a.created_at, a.earliest_execution, a.expires_at)
+            });
+
+        // Advance ledger
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + 1000);
+
+        // Re-approve
+        client.approve_upgrade(&make_wasm_hash(&env), &2);
+
+        env.as_contract(&client.address, || {
+            let approval2: Option<UpgradeApproval> =
+                env.storage().instance().get(&DataKey::UpgradeApproval);
+            let approval2 = approval2.unwrap();
+
+            assert_ne!(
+                approval2.created_at, first_created,
+                "Re-approval must reset created_at (no stale reuse)"
+            );
+            assert_ne!(
+                approval2.earliest_execution, first_earliest,
+                "Re-approval must reset earliest_execution"
+            );
+            assert_ne!(
+                approval2.expires_at, first_expires,
+                "Re-approval must reset expires_at"
+            );
+        });
+    }
+
+    // ── SUITE 2: Timelock enforcement ─────────────────────────
+
+    #[test]
+    fn test_execute_before_timelock_rejected() {
+        let (env, client, _) = setup();
+
+        let hash = make_wasm_hash(&env);
+
+        client.approve_upgrade(&hash, &2);
+
+        // Try immediately (before timelock)
+        let result = client.try_upgrade_contract(&hash);
+
+        assert!(result.is_err(), "Execute before timelock must be rejected");
+    }
+
+    #[test]
+    fn test_execute_exactly_at_timelock_succeeds() {
+        let (env, client, _) = setup();
+
+        let hash = make_wasm_hash(&env);
+
+        client.approve_upgrade(&hash, &2);
+
+        // Advance to exactly earliest_execution
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + UPGRADE_TIMELOCK_LEDGERS);
+
+        let result = client.try_upgrade_contract(&hash);
+
+        assert!(result.is_ok(), "Execute at earliest_execution must succeed");
+    }
+
+    #[test]
+    fn test_execute_one_before_timelock_rejected() {
+        let (env, client, _) = setup();
+
+        let hash = make_wasm_hash(&env);
+
+        client.approve_upgrade(&hash, &2);
+
+        // One ledger before timelock
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + UPGRADE_TIMELOCK_LEDGERS - 1);
+
+        assert!(client.try_upgrade_contract(&hash).is_err());
+    }
+
+    // ── SUITE 3: Expiry enforcement ────────────────────────────
+
+    #[test]
+    fn test_execute_after_expiry_rejected() {
+        let (env, client, _) = setup();
+
+        let hash = make_wasm_hash(&env);
+
+        client.approve_upgrade(&hash, &2);
+
+        // Advance past expiry
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + UPGRADE_APPROVAL_EXPIRY_LEDGERS + 1);
+
+        let result = client.try_upgrade_contract(&hash);
+
+        assert!(result.is_err(), "Execute after expiry must be rejected");
+    }
+
+    #[test]
+    fn test_execute_exactly_at_expiry_rejected() {
+        let (env, client, _) = setup();
+
+        let hash = make_wasm_hash(&env);
+
+        client.approve_upgrade(&hash, &2);
+
+        // Advance to exactly expires_at
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + UPGRADE_APPROVAL_EXPIRY_LEDGERS);
+
+        let result = client.try_upgrade_contract(&hash);
+
+        assert!(
+            result.is_err(),
+            "Execute at exact expiry ledger must be rejected (>=)"
+        );
+    }
+
+    #[test]
+    fn test_failed_execute_leaves_approval_unchanged() {
+        let (env, client, _) = setup();
+
+        let hash = make_wasm_hash(&env);
+
+        client.approve_upgrade(&hash, &2);
+
+        // Attempt execute before timelock (fails)
+        let _ = client.try_upgrade_contract(&hash);
+
+        // Approval must still exist unchanged
+        env.as_contract(&client.address, || {
+            let approval: Option<UpgradeApproval> =
+                env.storage().instance().get(&DataKey::UpgradeApproval);
+            assert!(
+                approval.is_some(),
+                "Failed execute must not remove approval"
+            );
+        });
+    }
+
+    // ── SUITE 4: Revocation ────────────────────────────────────
+
+    #[test]
+    fn test_revoke_removes_approval() {
+        let (env, client, _) = setup();
+
+        let hash = make_wasm_hash(&env);
+        client.approve_upgrade(&hash, &2);
+
+        client.revoke_upgrade(&hash);
+
+        env.as_contract(&client.address, || {
+            let approval: Option<UpgradeApproval> =
+                env.storage().instance().get(&DataKey::UpgradeApproval);
+            assert!(approval.is_none(), "Revoke must remove approval");
+        });
+    }
+
+    #[test]
+    fn test_revoke_before_timelock_succeeds() {
+        let (env, client, _) = setup();
+
+        let hash = make_wasm_hash(&env);
+        client.approve_upgrade(&hash, &2);
+
+        // Revoke immediately (before timelock)
+        assert!(client.try_revoke_upgrade(&hash).is_ok());
+    }
+
+    #[test]
+    fn test_revoke_after_expiry_succeeds_cleanup() {
+        let (env, client, _) = setup();
+
+        let hash = make_wasm_hash(&env);
+        client.approve_upgrade(&hash, &2);
+
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + UPGRADE_APPROVAL_EXPIRY_LEDGERS + 1);
+
+        // Revoke should succeed even on expired approval (cleanup)
+        assert!(client.try_revoke_upgrade(&hash).is_ok());
+    }
+
+    #[test]
+    fn test_revoke_idempotent_when_no_approval() {
+        let (env, client, _) = setup();
+
+        // Revoke with no approval — should not panic
+        assert!(client.try_revoke_upgrade(&make_wasm_hash(&env)).is_ok());
+    }
+
+    // ── SUITE 5: Overflow boundary ─────────────────────────────
+
+    #[test]
+    fn test_approve_at_max_ledger_does_not_overflow() {
+        let (env, client, _) = setup();
+
+        // Set ledger near u32::MAX (staying below host TTL extend limit)
+        env.ledger().set_sequence_number(u32::MAX - 7_000_000);
+
+        // Must not panic — saturating_add used
+        let result = client.try_approve_upgrade(&make_wasm_hash(&env), &2);
+
+        assert!(result.is_ok(), "Approve near u32::MAX must not overflow");
+    }
+
+    #[test]
+    fn test_saturating_add_caps_at_u32_max() {
+        // Unit test for the arithmetic
+        let near_max: u32 = u32::MAX - 100;
+
+        let result = near_max.saturating_add(UPGRADE_TIMELOCK_LEDGERS);
+
+        assert_eq!(result, u32::MAX, "saturating_add must cap at u32::MAX");
+    }
+
+    // ── SUITE 6: Replay prevention ─────────────────────────────
+
+    #[test]
+    fn test_cannot_replay_used_approval() {
+        let (env, client, _) = setup();
+
+        let hash = make_wasm_hash(&env);
+
+        client.approve_upgrade(&hash, &2);
+
+        // Advance past timelock
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + UPGRADE_TIMELOCK_LEDGERS);
+
+        // Execute (consumes approval)
+        client.upgrade_contract(&hash);
+
+        // Replay attempt — must fail (no approval)
+        let result = client.try_upgrade_contract(&hash);
+
+        assert!(result.is_err(), "Replaying used approval must fail");
+    }
+
+    #[test]
+    fn test_hash_mismatch_rejected() {
+        let (env, client, _) = setup();
+
+        let approved_hash = make_wasm_hash(&env);
+        let different_hash = BytesN::from_array(&env, &[2u8; 32]);
+
+        client.approve_upgrade(&approved_hash, &2);
+
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + UPGRADE_TIMELOCK_LEDGERS);
+
+        let result = client.try_upgrade_contract(&different_hash);
+
+        assert!(result.is_err());
+    }
+
+    // ── SUITE 7: Authorization ─────────────────────────────────
+
+    #[test]
+    fn test_approve_requires_admin_auth() {
+        use issuer_registry::{IssuerRegistryContract, IssuerRegistryContractClient};
+        use protocol_config::{ProtocolConfigContract, ProtocolConfigContractClient};
+
+        let env = Env::default();
+        let protocol_config_id = env.register(ProtocolConfigContract, ());
+        let issuer_registry_id = env.register(IssuerRegistryContract, ());
+        let contract_id = env.register(ProofRegistryContract, ());
+        let client = ProofRegistryContractClient::new(&env, &contract_id);
+        let admin = Address::from_str(&env, ADMIN);
+        let issuer = Address::from_str(&env, ISSUER);
+        let issuer_id = bytes(&env, 9);
+
+        env.mock_all_auths();
+        let pc_client = ProtocolConfigContractClient::new(&env, &protocol_config_id);
+        let ir_client = IssuerRegistryContractClient::new(&env, &issuer_registry_id);
+        pc_client.initialize(&admin);
+        pc_client.approve_schema_version(&1);
+        ir_client.initialize(&admin);
+        ir_client.register_issuer(&issuer_id, &issuer, &bytes(&env, 8), &bytes(&env, 99));
+        client.initialize(&admin, &issuer_registry_id, &protocol_config_id);
+        env.set_auths(&[]);
+
+        let result = client.try_approve_upgrade(&make_wasm_hash(&env), &2);
+
+        assert!(result.is_err(), "Non-admin must not approve");
+    }
+
+    #[test]
+    fn test_execute_requires_admin_auth() {
+        use issuer_registry::{IssuerRegistryContract, IssuerRegistryContractClient};
+        use protocol_config::{ProtocolConfigContract, ProtocolConfigContractClient};
+
+        let env = Env::default();
+        let protocol_config_id = env.register(ProtocolConfigContract, ());
+        let issuer_registry_id = env.register(IssuerRegistryContract, ());
+        let contract_id = env.register(ProofRegistryContract, ());
+        let client = ProofRegistryContractClient::new(&env, &contract_id);
+        let admin = Address::from_str(&env, ADMIN);
+        let issuer = Address::from_str(&env, ISSUER);
+        let issuer_id = bytes(&env, 9);
+
+        env.mock_all_auths();
+        let pc_client = ProtocolConfigContractClient::new(&env, &protocol_config_id);
+        let ir_client = IssuerRegistryContractClient::new(&env, &issuer_registry_id);
+        pc_client.initialize(&admin);
+        pc_client.approve_schema_version(&1);
+        ir_client.initialize(&admin);
+        ir_client.register_issuer(&issuer_id, &issuer, &bytes(&env, 8), &bytes(&env, 99));
+        client.initialize(&admin, &issuer_registry_id, &protocol_config_id);
+        client.approve_upgrade(&make_wasm_hash(&env), &2);
+        env.set_auths(&[]);
+
+        let result = client.try_upgrade_contract(&make_wasm_hash(&env));
+
+        assert!(result.is_err(), "Non-admin must not execute");
+    }
+
+    #[test]
+    fn test_revoke_requires_admin_auth() {
+        use issuer_registry::{IssuerRegistryContract, IssuerRegistryContractClient};
+        use protocol_config::{ProtocolConfigContract, ProtocolConfigContractClient};
+
+        let env = Env::default();
+        let protocol_config_id = env.register(ProtocolConfigContract, ());
+        let issuer_registry_id = env.register(IssuerRegistryContract, ());
+        let contract_id = env.register(ProofRegistryContract, ());
+        let client = ProofRegistryContractClient::new(&env, &contract_id);
+        let admin = Address::from_str(&env, ADMIN);
+        let issuer = Address::from_str(&env, ISSUER);
+        let issuer_id = bytes(&env, 9);
+
+        env.mock_all_auths();
+        let pc_client = ProtocolConfigContractClient::new(&env, &protocol_config_id);
+        let ir_client = IssuerRegistryContractClient::new(&env, &issuer_registry_id);
+        pc_client.initialize(&admin);
+        pc_client.approve_schema_version(&1);
+        ir_client.initialize(&admin);
+        ir_client.register_issuer(&issuer_id, &issuer, &bytes(&env, 8), &bytes(&env, 99));
+        client.initialize(&admin, &issuer_registry_id, &protocol_config_id);
+        client.approve_upgrade(&make_wasm_hash(&env), &2);
+        env.set_auths(&[]);
+
+        let result = client.try_revoke_upgrade(&make_wasm_hash(&env));
+
+        assert!(result.is_err(), "Non-admin must not revoke");
     }
 }

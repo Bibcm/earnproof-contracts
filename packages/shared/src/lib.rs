@@ -381,6 +381,7 @@ pub enum IssuerError {
     MaxBelowActiveUsage = 209,
     /// The suspended issuer's reactivation cooldown has not yet elapsed.
     ReactivationCooldownActive = 210,
+    /// An all-zero metadata hash or metadata URI hash commitment was supplied.
     InvalidMetadataCommitment = 211,
 }
 
@@ -484,8 +485,10 @@ pub struct ConfigChangeSummary {
 pub enum PauseScope {
     Global,
     Registration,
+    Update,
     Updates,
     Revocation,
+    Upgrade,
     Upgrades,
     Disputes,
 }
@@ -716,6 +719,38 @@ pub struct SchemaRecord {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpgradeApprovalRecord {
+    pub new_version: u32,
+    pub target_contract: Address,
+    pub contract_role: Symbol,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpgradeHistoryRecord {
+    pub old_wasm_hash: BytesN<32>,
+    pub new_wasm_hash: BytesN<32>,
+    pub old_version: u32,
+    pub new_version: u32,
+    pub ledger_sequence: u32,
+    pub ledger_timestamp: u64,
+    pub upgraded_by: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ArchivedProofRecord {
+    pub proof_id_hash: BytesN<32>,
+    pub commitment_hash: BytesN<32>,
+    pub issuer_address: Address,
+    pub was_revoked: bool,
+    pub schema_version: u32,
+    pub expired_at: u64,
+    pub archived_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UpgradeReceipt {
     pub wasm_hash: BytesN<32>,
     pub old_version: u32,
@@ -723,6 +758,7 @@ pub struct UpgradeReceipt {
     pub upgraded_at: u64,
     pub upgraded_by: Address,
 }
+
 // ── Upgrade Approval Metadata ──────────────────────────────────────────────────
 // Metadata for an upgrade approval, exposed for off-chain verification.
 //
