@@ -12,10 +12,7 @@ crate-type = ["cdylib", "rlib"]
 earnproof-shared.workspace = true
 soroban-sdk.workspace = true
 
-[features]
-testutils = ["soroban-sdk/testutils"]
-
 [dev-dependencies]
-issuer-registry = { path = "../issuer-registry", features = ["testutils"] }
-protocol-config = { path = "../protocol-config", features = ["testutils"] }
+issuer-registry = { path = "../issuer-registry" }
+protocol-config = { path = "../protocol-config" }
 soroban-sdk = { workspace = true, features = ["testutils"] }

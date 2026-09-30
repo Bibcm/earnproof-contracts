@@ -78,6 +78,29 @@ pub const GENESIS_ID_VERSION: u32 = 1;
 /// version that has no explicit override configured in protocol-config.
 pub const DEFAULT_SCHEMA_PAYLOAD_LIMIT: u32 = 4096;
 
+/// Default deterministic ledger window used when a schema has no governed rate
+/// limit. A zero maximum means registrations are paused for that schema.
+pub const DEFAULT_SCHEMA_RATE_WINDOW_LEDGERS: u32 = 1_000;
+pub const DEFAULT_SCHEMA_RATE_LIMIT: u32 = u32::MAX;
+
+/// Governed, fixed-size issuance policy for one schema version.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchemaRateLimit {
+    pub max_registrations: u32,
+    pub window_ledgers: u32,
+}
+
+/// Observable usage for the current deterministic schema window.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchemaRateLimitUsage {
+    pub window_start_ledger: u32,
+    pub reset_ledger: u32,
+    pub registrations: u32,
+    pub remaining: u32,
+}
+
 /// Computes a deterministic, domain-separated genesis identifier for a
 /// contract instance.
 ///
@@ -373,6 +396,7 @@ pub enum IssuerError {
     IssuerInactive = 205,
     InvalidTransition = 206,
     InvalidAddress = 207,
+    InvalidMetadataCommitment = 211,
     /// Registering or reactivating this issuer would exceed the governed
     /// maximum active-issuer capacity.
     IssuerCapacityExceeded = 208,
@@ -381,8 +405,6 @@ pub enum IssuerError {
     MaxBelowActiveUsage = 209,
     /// The suspended issuer's reactivation cooldown has not yet elapsed.
     ReactivationCooldownActive = 210,
-    /// An all-zero metadata hash or metadata URI hash commitment was supplied.
-    InvalidMetadataCommitment = 211,
 }
 
 /// Proof-specific errors (300-399).
@@ -485,10 +507,8 @@ pub struct ConfigChangeSummary {
 pub enum PauseScope {
     Global,
     Registration,
-    Update,
     Updates,
     Revocation,
-    Upgrade,
     Upgrades,
     Disputes,
 }
@@ -530,6 +550,25 @@ pub struct UpgradeApproval {
     pub expires_at: u32,
     /// Address that created this approval
     pub approved_by: Address,
+}
+
+/// Privacy-safe issuer signing-key commitment. Only a key digest and algorithm
+/// identifier are persisted; raw public or private keys are never accepted.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SigningKeyCommitment {
+    pub key_hash: BytesN<32>,
+    pub algorithm: u32,
+    pub activated_ledger: u32,
+}
+
+/// Versioned opaque commitments for issuer classification policy documents.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IssuerPolicyCommitments {
+    pub encoding_version: u32,
+    pub category_commitment: BytesN<32>,
+    pub jurisdiction_commitment: BytesN<32>,
 }
 
 #[contracttype]
@@ -719,24 +758,17 @@ pub struct SchemaRecord {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct UpgradeApprovalRecord {
-    pub new_version: u32,
-    pub target_contract: Address,
-    pub contract_role: Symbol,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct UpgradeHistoryRecord {
-    pub old_wasm_hash: BytesN<32>,
-    pub new_wasm_hash: BytesN<32>,
+pub struct UpgradeReceipt {
+    pub wasm_hash: BytesN<32>,
     pub old_version: u32,
     pub new_version: u32,
-    pub ledger_sequence: u32,
-    pub ledger_timestamp: u64,
+    pub upgraded_at: u64,
     pub upgraded_by: Address,
 }
 
+/// Bounded, on-chain record of a proof that has been archived after
+/// expiring or being revoked. Kept separate from `ProofRecord` storage so
+/// live-proof lookups never have to filter out archived entries.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ArchivedProofRecord {
@@ -749,16 +781,29 @@ pub struct ArchivedProofRecord {
     pub archived_at: u64,
 }
 
+/// On-chain record of an approved-but-not-yet-executed contract upgrade,
+/// keyed by the approved WASM hash. Distinct from `UpgradeApprovalMetadata`,
+/// which is the off-chain-facing query result derived from this record.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct UpgradeReceipt {
-    pub wasm_hash: BytesN<32>,
-    pub old_version: u32,
+pub struct UpgradeApprovalRecord {
     pub new_version: u32,
-    pub upgraded_at: u64,
-    pub upgraded_by: Address,
+    pub target_contract: Address,
+    pub contract_role: Symbol,
 }
 
+/// One entry in a contract's append-only upgrade history log.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpgradeHistoryRecord {
+    pub old_wasm_hash: BytesN<32>,
+    pub new_wasm_hash: BytesN<32>,
+    pub old_version: u32,
+    pub new_version: u32,
+    pub ledger_sequence: u32,
+    pub ledger_timestamp: u64,
+    pub upgraded_by: Address,
+}
 // ── Upgrade Approval Metadata ──────────────────────────────────────────────────
 // Metadata for an upgrade approval, exposed for off-chain verification.
 //

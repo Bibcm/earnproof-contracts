@@ -1,7 +1,7 @@
 # scenario: paused
-# revision: 9
-# reason: merge upstream/develop: address rotation/revocation reasons, governance proposal ids, and timelock/upgrade-governance additions (round 2 conflict resolution)
-# body-digest: f17f097c350d0a3f00c36a20692fb94e627a80d7e3d934a321483a43a78b11e1
+# revision: 10
+# reason: Regenerate after merging develop's issuer-epoch/capacity fields into PR 237
+# body-digest: 704ab7592e30a70a698e307c8f249e9c683f6ea299ae151394370572dc46a2b0
 
 [ledger]
 sequence = 1000
@@ -24,26 +24,22 @@ proof-registry instance [sym:Admin] = addr:admin
 proof-registry instance [sym:ContractVersion] = u32:1
 proof-registry instance [sym:Genesis] = {sym:genesis_id: bytes:87d5e19ffff41ef394bed747f4ca4dcdcbf818cec54eb466639248eb14dc82cd, sym:initialized_at_ledger: u32:1000}
 proof-registry instance [sym:InstanceLiveUntil] = u32:501000
-proof-registry instance [sym:IssuerRegistryVersion] = u32:1
 proof-registry instance [sym:IssuerRegistry] = addr:issuer-registry
-proof-registry instance [sym:ProtocolConfigVersion] = u32:1
 proof-registry instance [sym:ProtocolConfig] = addr:protocol-config
 proof-registry instance [sym:RegistryEpoch] = u32:1
+proof-registry persistent [sym:IssuerActiveProofCount, addr:issuer] = u32:1
+proof-registry persistent [sym:IssuerLifetimeProofCount, addr:issuer] = u32:1
 proof-registry persistent [sym:Proof, bytes:3333333333333333333333333333333333333333333333333333333333333333] = {sym:activates_at: u64:0, sym:commitment_hash: bytes:4444444444444444444444444444444444444444444444444444444444444444, sym:created_at: u64:1000, sym:created_ledger: u32:1000, sym:expires_at: u64:2000, sym:issuer_address: addr:issuer, sym:proof_id_hash: bytes:3333333333333333333333333333333333333333333333333333333333333333, sym:revoked_at: u64:0, sym:schema_version: u32:1, sym:status: [sym:Active]}
 proof-registry persistent [sym:ProofTtl, bytes:3333333333333333333333333333333333333333333333333333333333333333] = u32:501000
+proof-registry persistent [sym:SchemaRateUsage, u32:1, u32:1000] = u32:1
 protocol-config instance [sym:Admin] = addr:admin
 protocol-config instance [sym:ConfigHistoryTotal] = u32:2
 protocol-config instance [sym:ConfigVersion] = u32:3
 protocol-config instance [sym:ContractVersion] = u32:1
-protocol-config instance [sym:CurrentPause] = {sym:active: true, sym:ended_at: u64:0, sym:incident_id: bytes:0000000000000000000000000000000000000000000000000000000000000000, sym:reason_commitment: bytes:0000000000000000000000000000000000000000000000000000000000000000, sym:started_at: u64:1000}
 protocol-config instance [sym:Genesis] = {sym:genesis_id: bytes:fc884b881dd72470b277e7f17051834343fce924e5328f844966e438d3a07cd3, sym:initialized_at_ledger: u32:1000}
-protocol-config instance [sym:InstanceLiveUntil] = u32:501000
-protocol-config instance [sym:LatestPause] = {sym:active: true, sym:ended_at: u64:0, sym:incident_id: bytes:0000000000000000000000000000000000000000000000000000000000000000, sym:reason_commitment: bytes:0000000000000000000000000000000000000000000000000000000000000000, sym:started_at: u64:1000}
 protocol-config instance [sym:Paused] = true
 protocol-config persistent [sym:ConfigHistoryRing, u32:0] = {sym:category: [sym:SchemaApproval], sym:config_version: u32:2, sym:ledger: u32:1000, sym:proposal_commitment: bytes:8f88362ee8034de8dfd2d681d099066cada58b40ee0bbbc2321309d0b4f4d43f, sym:timestamp: u64:1000}
 protocol-config persistent [sym:ConfigHistoryRing, u32:1] = {sym:category: [sym:PauseToggle], sym:config_version: u32:3, sym:ledger: u32:1000, sym:proposal_commitment: bytes:cd2662154e6d76b2b2b92e70c0cac3ccf534f9b74eb5b89819ec509083d00a50, sym:timestamp: u64:1000}
-protocol-config persistent [sym:SchemaRecord, u32:1] = {sym:activated_at: u64:1000, sym:deprecated_at: u64:0, sym:is_approved: true, sym:metadata_hash: bytes:0101010101010101010101010101010101010101010101010101010101010101, sym:version: u32:1}
-protocol-config persistent [sym:SchemaTtl, u32:1] = u32:501000
 protocol-config persistent [sym:SchemaVersion, u32:1] = true
 
 [events]

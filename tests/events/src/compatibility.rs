@@ -21,6 +21,7 @@ use soroban_sdk::{Address, Env, Symbol, TryFromVal, Val};
 const DECLARED_EVENTS: &[(&str, &[&str])] = &[
     // protocol-config
     ("initialized", &["admin"]),
+    ("admin_changed", &["new_admin"]),
     (
         "admin_transfer_nominated",
         &["pending_admin", "nominated_by"],

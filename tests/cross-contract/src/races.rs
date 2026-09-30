@@ -53,17 +53,13 @@ const UPDATES: [Update; 7] = [
     Update::RevokeIssuer,
 ];
 
-fn apply(deployment: &Deployment, update: Update, _step: usize) {
+fn apply(deployment: &Deployment, update: Update) {
     let reason = soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]);
     match update {
         Update::Pause => deployment.config.pause(),
         Update::Unpause => deployment.config.unpause(),
-        Update::DeprecateSchema => deployment
-            .config
-            .deprecate_schema_version(&APPROVED_SCHEMA),
-        Update::ApproveSchema => deployment
-            .config
-            .approve_schema_version(&APPROVED_SCHEMA),
+        Update::DeprecateSchema => deployment.config.deprecate_schema_version(&APPROVED_SCHEMA),
+        Update::ApproveSchema => deployment.config.approve_schema_version(&APPROVED_SCHEMA),
         Update::SuspendIssuer => {
             deployment
                 .issuers
@@ -118,7 +114,7 @@ fn an_update_applied_before_registration_is_observed_by_it() {
     // it, whichever dependency the update touched.
     for update in UPDATES {
         let deployment = Deployment::new();
-        apply(&deployment, update, 0);
+        apply(&deployment, update);
 
         assert_eq!(
             attempt(&deployment, 0xB1),
@@ -138,7 +134,7 @@ fn an_update_applied_after_registration_does_not_alter_the_stored_record() {
         let proof_id = deployment.register(0xB2);
         let before = deployment.footprint(&proof_id);
 
-        apply(&deployment, update, 0);
+        apply(&deployment, update);
 
         let after = deployment.footprint(&proof_id);
         assert_eq!(
@@ -166,8 +162,8 @@ fn the_last_update_applied_before_registration_is_the_one_that_decides() {
     for (one, other) in conflicts {
         for (first, last) in [(one, other), (other, one)] {
             let deployment = Deployment::new();
-            apply(&deployment, first, 0);
-            apply(&deployment, last, 1);
+            apply(&deployment, first);
+            apply(&deployment, last);
 
             assert_eq!(
                 attempt(&deployment, 0xB3),
@@ -229,7 +225,10 @@ fn a_dependency_change_during_a_failing_invocation_is_discarded() {
     });
     let racing =
         SelfPausingConfigClient::new(&deployment.env, &deployment.proofs.get_protocol_config());
-    deployment.issuers.suspend_issuer(&deployment.issuer_id, &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]));
+    deployment.issuers.suspend_issuer(
+        &deployment.issuer_id,
+        &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+    );
 
     let rejection = deployment.assert_rejected_and_atomic(&hash(&deployment.env, 0xB6));
 
@@ -241,6 +240,9 @@ fn a_dependency_change_during_a_failing_invocation_is_discarded() {
 
     // The discarded change left nothing behind: once the issuer is active
     // again, registration works exactly as it would have before the failure.
-    deployment.issuers.reactivate_issuer(&deployment.issuer_id, &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]));
+    deployment.issuers.reactivate_issuer(
+        &deployment.issuer_id,
+        &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+    );
     deployment.register(0xB7);
 }
