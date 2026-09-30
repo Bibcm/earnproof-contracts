@@ -38,10 +38,18 @@ enum DataKey {
     SigningKeyHistory(BytesN<32>, u32),
     SigningKeyHistoryCount(BytesN<32>),
     IssuerPolicy(BytesN<32>),
+    /// Monotonic epoch, advanced once per externally visible issuer mutation.
+    /// Off-chain consumers poll it as a cheap cache-invalidation signal.
     IssuerEpoch,
+    /// Governed ceiling on the number of simultaneously active issuers.
     MaxActiveIssuers,
+    /// Current count of issuers with `IssuerStatus::Active`.
     ActiveIssuerCount,
+    /// Governed cooldown, in seconds, a suspended issuer must wait before
+    /// reactivation is permitted.
     ReactivationCooldown,
+    /// Ledger timestamp at or after which a specific suspended issuer may be
+    /// reactivated. Fixed at suspension time from the cooldown then in force.
     ReactivatableAt(BytesN<32>),
 }
 
@@ -139,7 +147,6 @@ pub struct IssuerSuspended {
     pub issuer_id_hash: BytesN<32>,
     pub effective_ledger: u32,
     pub effective_timestamp: u64,
-    pub reason_commitment: BytesN<32>,
     pub updated_at: u64,
     pub epoch: u64,
 }
@@ -153,7 +160,6 @@ pub struct IssuerReactivated {
     pub issuer_id_hash: BytesN<32>,
     pub effective_ledger: u32,
     pub effective_timestamp: u64,
-    pub reason_commitment: BytesN<32>,
     pub updated_at: u64,
     pub epoch: u64,
 }
@@ -167,7 +173,6 @@ pub struct IssuerRevoked {
     pub issuer_id_hash: BytesN<32>,
     pub effective_ledger: u32,
     pub effective_timestamp: u64,
-    pub reason_commitment: BytesN<32>,
     pub updated_at: u64,
     pub epoch: u64,
 }
@@ -1440,9 +1445,9 @@ impl IssuerRegistryContract {
         // timestamp. Timing is sourced only from the host ledger environment.
         let now = env.ledger().timestamp();
         let effective_ledger = env.ledger().sequence();
+        let now = env.ledger().timestamp();
         record.status = status.clone();
         record.reason_commitment = Some(reason_commitment.clone());
-        let now = env.ledger().timestamp();
 
         // Enforce cooldown and capacity, and adjust the active-issuer count, per
         // transition. All checks that can reject the call run before any state
@@ -1496,7 +1501,6 @@ impl IssuerRegistryContract {
                 issuer_id_hash,
                 effective_ledger,
                 effective_timestamp: now,
-                reason_commitment,
                 updated_at: now,
                 epoch,
             }
@@ -1505,7 +1509,6 @@ impl IssuerRegistryContract {
                 issuer_id_hash,
                 effective_ledger,
                 effective_timestamp: now,
-                reason_commitment,
                 updated_at: now,
                 epoch,
             }
@@ -1514,7 +1517,6 @@ impl IssuerRegistryContract {
                 issuer_id_hash,
                 effective_ledger,
                 effective_timestamp: now,
-                reason_commitment,
                 updated_at: now,
                 epoch,
             }
