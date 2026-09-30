@@ -56,7 +56,6 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
             "metadata_uri_hash",
             "metadata_revision",
             "updated_at",
-            "epoch",
         ],
     ),
     (
@@ -65,9 +64,7 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
             "issuer_id_hash",
             "effective_ledger",
             "effective_timestamp",
-            "reason_commitment",
             "updated_at",
-            "epoch",
         ],
     ),
     (
@@ -76,9 +73,7 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
             "issuer_id_hash",
             "effective_ledger",
             "effective_timestamp",
-            "reason_commitment",
             "updated_at",
-            "epoch",
         ],
     ),
     (
@@ -87,9 +82,7 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
             "issuer_id_hash",
             "effective_ledger",
             "effective_timestamp",
-            "reason_commitment",
             "updated_at",
-            "epoch",
         ],
     ),
     (
@@ -100,6 +93,18 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
             "new_address",
             "updated_at",
             "epoch",
+        ],
+    ),
+    // proof-registry
+    (
+        "proof_registered",
+        &[
+            "proof_id_hash",
+            "issuer_address",
+            "schema_version",
+            "created_ledger",
+            "created_at",
+            "expires_at",
         ],
     ),
     // proof-registry

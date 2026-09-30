@@ -17,69 +17,68 @@ use soroban_sdk::{Address, IntoVal};
 fn config_attempts(d: &Deployment, signer: &Address) -> std::vec::Vec<(&'static str, bool)> {
     let mut out = std::vec::Vec::new();
 
-    let p1 = hash(&d.env, 0x10);
     authorize(
         &d.env,
         signer,
         &d.config_address,
         "pause",
-        (&p1,).into_val(&d.env),
+        ().into_val(&d.env),
     );
-    out.push(("protocol-config::pause", d.config.try_pause(&p1).is_ok()));
+    out.push(("protocol-config::pause", d.config.try_pause().is_ok()));
 
-    let p2 = hash(&d.env, 0x11);
     authorize(
         &d.env,
         signer,
         &d.config_address,
         "unpause",
-        (&p2,).into_val(&d.env),
+        ().into_val(&d.env),
     );
-    out.push((
-        "protocol-config::unpause",
-        d.config.try_unpause(&p2).is_ok(),
-    ));
+    out.push(("protocol-config::unpause", d.config.try_unpause().is_ok()));
 
     let next = Address::generate(&d.env);
-    let p3 = hash(&d.env, 0x12);
     authorize(
         &d.env,
         signer,
         &d.config_address,
         "set_admin",
-        (&p3, &next).into_val(&d.env),
+        (&next,).into_val(&d.env),
     );
     out.push((
         "protocol-config::set_admin",
-        d.config.try_set_admin(&p3, &next).is_ok(),
+        {
+            let r = d.config.try_nominate_admin(&next);
+            if r.is_ok() {
+                let _ = d.config.try_accept_admin();
+            }
+            r
+        }
+        .is_ok(),
     ));
 
     let version = 7_u32;
-    let p4 = hash(&d.env, 0x13);
     authorize(
         &d.env,
         signer,
         &d.config_address,
         "approve_schema_version",
-        (&p4, &version).into_val(&d.env),
+        (&version,).into_val(&d.env),
     );
     out.push((
         "protocol-config::approve_schema_version",
-        d.config.try_approve_schema_version(&p4, &version).is_ok(),
+        d.config.try_approve_schema_version(&version).is_ok(),
     ));
 
-    let p5 = hash(&d.env, 0x14);
     authorize(
         &d.env,
         signer,
         &d.config_address,
         "deprecate_schema_version",
-        (&p5, &APPROVED_SCHEMA).into_val(&d.env),
+        (&APPROVED_SCHEMA,).into_val(&d.env),
     );
     out.push((
         "protocol-config::deprecate_schema_version",
         d.config
-            .try_deprecate_schema_version(&p5, &APPROVED_SCHEMA)
+            .try_deprecate_schema_version(&APPROVED_SCHEMA)
             .is_ok(),
     ));
 
@@ -106,15 +105,14 @@ fn a_former_admin_retains_no_authority_over_any_privileged_mutation() {
 
     // Control: the successor still holds full authority, so the rejections
     // above are attributable to the rotation and nothing else.
-    let p = hash(&deployment.env, 0x15);
     authorize(
         &deployment.env,
         &successor,
         &deployment.config_address,
         "pause",
-        (&p,).into_val(&deployment.env),
+        ().into_val(&deployment.env),
     );
-    assert!(deployment.config.try_pause(&p).is_ok());
+    assert!(deployment.config.try_pause().is_ok());
     assert!(deployment.config.is_paused());
 }
 
@@ -129,15 +127,21 @@ fn a_former_admin_cannot_reclaim_authority_by_rotating_to_themselves() {
 
     deployment.set_admin(&successor);
 
-    let p = hash(&deployment.env, 0x16);
     authorize(
         &deployment.env,
         &former,
         &deployment.config_address,
         "set_admin",
-        (&p, &former).into_val(&deployment.env),
+        (&former,).into_val(&deployment.env),
     );
-    assert!(deployment.config.try_set_admin(&p, &former).is_err());
+    assert!({
+        let r = deployment.config.try_nominate_admin(&former);
+        if r.is_ok() {
+            let _ = deployment.config.try_accept_admin();
+        }
+        r
+    }
+    .is_err());
 
     assert_eq!(deployment.config.get_admin(), successor);
     assert!(
@@ -156,15 +160,14 @@ fn rotation_to_the_incumbent_keeps_authority_intact() {
     deployment.set_admin(&admin);
     assert_eq!(deployment.config.get_admin(), admin);
 
-    let p = hash(&deployment.env, 0x17);
     authorize(
         &deployment.env,
         &admin,
         &deployment.config_address,
         "pause",
-        (&p,).into_val(&deployment.env),
+        ().into_val(&deployment.env),
     );
-    assert!(deployment.config.try_pause(&p).is_ok());
+    assert!(deployment.config.try_pause().is_ok());
     assert!(deployment.config.is_paused());
 }
 
@@ -305,18 +308,19 @@ fn rotating_the_config_admin_does_not_move_registry_authority() {
     let before = deployment.snapshot();
 
     // The new config admin must not inherit issuer-registry authority...
-    let p = hash(&deployment.env, 0x18);
-    let reason = soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]);
     authorize(
         &deployment.env,
         &config_admin,
         &deployment.issuers_address,
         "suspend_issuer",
-        (&p, &deployment.issuer_id, &reason).into_val(&deployment.env),
+        (&deployment.issuer_id,).into_val(&deployment.env),
     );
     assert!(deployment
         .issuers
-        .try_suspend_issuer(&p, &deployment.issuer_id, &reason)
+        .try_suspend_issuer(
+            &deployment.issuer_id,
+            &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32])
+        )
         .is_err());
     deployment.assert_no_side_effects(&before, "config admin on suspend_issuer");
 
